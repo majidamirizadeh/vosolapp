@@ -18,8 +18,8 @@ export const CONFIG = {
 
   /** عکس‌ها */
   photos: {
-    maxSide: 1200,        // بزرگ‌ترین ضلع عکس (پیکسل)
-    quality: 0.72,        // کیفیت JPEG ‏(۰ تا ۱)
+    maxSide: 400,        // بزرگ‌ترین ضلع عکس (پیکسل)
+    quality: 0.4,        // کیفیت JPEG ‏(۰ تا ۱)
     separator: "_",       // 12345_1.jpg ، 12345_2.jpg ...
     captureOnly: true,    // true = فقط دوربین ‏(بدون انتخاب از گالری)
   },
