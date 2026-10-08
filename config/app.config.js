@@ -18,7 +18,7 @@ export const CONFIG = {
 
   /** عکس‌ها */
   photos: {
-    maxSide: 400,        // بزرگ‌ترین ضلع عکس (پیکسل)
+    maxSide: 800,        // بزرگ‌ترین ضلع عکس (پیکسل)
     quality: 0.4,        // کیفیت JPEG ‏(۰ تا ۱)
     separator: "_",       // 12345_1.jpg ، 12345_2.jpg ...
     captureOnly: true,    // true = فقط دوربین ‏(بدون انتخاب از گالری)
@@ -27,8 +27,8 @@ export const CONFIG = {
   /** درج اطلاعات فرم روی عکس (گوشه بالا سمت راست) */
   stamp: {
     enabled: true,
-    fontRatio: 0.027,     // اندازه فونت نسبت به عرض عکس
-    maxWidthRatio: 0.66,  // حداکثر عرض کادر نسبت به عرض عکس
+    fontRatio: 0.020,     // اندازه فونت نسبت به عرض عکس
+    maxWidthRatio: 0.50,  // حداکثر عرض کادر نسبت به عرض عکس
     // هر آرایه = یک خط؛ کلیدها از فیلدهای config/modes.js
     lines: [
       ["modeTitle"],
