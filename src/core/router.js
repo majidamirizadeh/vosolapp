@@ -14,6 +14,7 @@ export function createRouter(modules, navEl, viewEl) {
     const pane = h("section", { class: "pane", id: `tab-${m.id}`, hidden: true });
     viewEl.append(pane);
     panes.set(m.id, pane);
+    if (m.nav === false) continue; // فقط از منوی همبرگری باز می‌شود
     const badge = h("span", { class: "nav-badge hidden" });
     const btn = h("button", { type: "button", class: "nav-btn", "data-tab": m.id, onclick: () => show(m.id) },
       h("span", { class: "nav-ico" }, m.icon), h("span", { class: "nav-lbl" }, m.title), badge);
@@ -30,7 +31,8 @@ export function createRouter(modules, navEl, viewEl) {
     for (const m of modules) {
       if (!m.badge) continue;
       const n = await m.badge();
-      const b = buttons.get(m.id)._badge;
+      const b = buttons.get(m.id)?._badge;
+      if (!b) continue;
       b.textContent = toPersianDigits(n);
       b.classList.toggle("hidden", !n);
     }
@@ -44,7 +46,7 @@ export function createRouter(modules, navEl, viewEl) {
       const on = pid === id;
       pane.hidden = !on;
       pane.classList.toggle("active", on);
-      buttons.get(pid).classList.toggle("active", on);
+      buttons.get(pid)?.classList.toggle("active", on);
     }
     current = id;
     await modules.find((m) => m.id === id).onShow?.();
@@ -53,5 +55,6 @@ export function createRouter(modules, navEl, viewEl) {
   }
 
   bus.on(EV.RECORDS_CHANGED, refreshBadges);
-  return { mountAll, show, refreshBadges, get current() { return current; } };
+  const has = (id) => modules.some((m) => m.id === id);
+  return { mountAll, show, has, refreshBadges, get current() { return current; } };
 }

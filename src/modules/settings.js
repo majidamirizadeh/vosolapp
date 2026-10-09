@@ -61,6 +61,7 @@ export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
 
   return {
     id: "settings",
+    nav: false,
     title: "تنظیمات",
     icon: "⚙️",
     mount(container) { box = container; },

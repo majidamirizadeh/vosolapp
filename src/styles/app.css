@@ -360,3 +360,27 @@ textarea { resize: none; }
 .rec-acts .btn { flex: 1; margin: 0; }
 .rec-note { background: #fffbe6; border-radius: 6px; padding: 3px 8px; margin-top: 3px; white-space: pre-line; }
 .rec-note-ico { font-size: .75rem; }
+
+/* ───── منوی همبرگری و بازه سریع ───── */
+.app-header { grid-template-columns: 44px 1fr 44px; }
+.hdr-side { display: flex; align-items: center; }
+.hdr-menu-wrap { position: relative; justify-content: flex-end; }
+.hdr-burger { font-size: 1.25rem; line-height: 1; padding: 6px 12px; }
+.hdr-menu {
+  position: absolute; top: calc(100% + 10px); left: 0; min-width: 210px; z-index: 80;
+  background: #fff; color: var(--text); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22);
+}
+.hdr-menu-user {
+  padding: 12px 16px; font-weight: 700; font-size: .88rem; background: #f4f7fb;
+  border-bottom: 1px solid var(--line); word-break: break-word;
+}
+.hdr-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: #fff;
+  padding: 13px 16px; font-size: .92rem; text-align: right; cursor: pointer; color: var(--text);
+}
+.hdr-menu-item + .hdr-menu-item { border-top: 1px solid var(--line); }
+.hdr-menu-item:active { background: #eef3fb; }
+.hdr-menu-item.danger { color: var(--danger); }
+.menu-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.25); }
+.range-select { width: 100%; }

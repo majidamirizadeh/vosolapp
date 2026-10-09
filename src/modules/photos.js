@@ -42,22 +42,11 @@ export async function downscale(file, maxSide = CONFIG.photos.maxSide, quality =
   return { blob: await toBlob(c, "image/jpeg", quality), width: w, height: h };
 }
 
-function wrapText(ctx, text, maxWidth) {
-  const words = text.split(" ");
-  const lines = [];
-  let cur = "";
-  for (const w of words) {
-    const t = cur ? `${cur} ${w}` : w;
-    if (ctx.measureText(t).width <= maxWidth || !cur) cur = t;
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  return lines;
-}
-
 /**
+ * مهر: نوار نیمه‌شفاف پایین عکس. هر گروه = دو سطر (عنوان‌ها بالا، مقدارها پایین).
+ * فونت درشت است؛ اگر همه ستون‌ها در یک گروه جا نشوند، به ۲ یا ۳ گروه (نوار چندطبقه) تقسیم می‌شوند.
  * @param {Blob} blob عکس بدون مهر
- * @param {{title:string, rows:string[]}} info  title: خط اول (پررنگ/زرد)، rows: بقیه خطوط
+ * @param {{cols:{label:string,value:string}[]}} info
  */
 export async function stampPhoto(blob, info, opts = {}) {
   const st = { ...CONFIG.stamp, ...opts };
@@ -69,61 +58,79 @@ export async function stampPhoto(blob, info, opts = {}) {
   ctx.drawImage(bmp, 0, 0, w, h);
   bmp.close?.();
 
-  if (st.enabled !== false && (info.title || info.rows?.length)) {
+  const cols = (info.cols || []).filter((x) => x.value !== "" && x.value != null);
+  if (st.enabled !== false && cols.length) {
     await ensureFonts();
-    const fs = Math.max(22, Math.round(w * st.fontRatio));
     const family = `Vazirmatn, Tahoma, "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif`;
-    const pad = Math.round(fs * 0.6);
-    const lineH = Math.round(fs * 1.55);
-    const margin = Math.round(fs * 0.7);
-    const maxBoxW = Math.round(w * st.maxWidthRatio);
-    const innerMax = maxBoxW - pad * 2;
-
+    const avail = w - 12;
     ctx.direction = "rtl";
-    ctx.textAlign = "right";
     ctx.textBaseline = "middle";
 
-    const lines = [];
-    if (info.title) {
-      ctx.font = `700 ${Math.round(fs * 1.12)}px ${family}`;
-      for (const l of wrapText(ctx, info.title, innerMax)) lines.push({ text: l, title: true });
-    }
-    ctx.font = `700 ${fs}px ${family}`;
-    for (const r of info.rows || []) for (const l of wrapText(ctx, r, innerMax)) lines.push({ text: l });
+    const colWidths = (size) => {
+      ctx.font = `700 ${size}px ${family}`;
+      const gap = Math.round(size * 1.0);
+      return cols.map((x) => Math.ceil(Math.max(ctx.measureText(x.label).width, ctx.measureText(String(x.value)).width)) + gap);
+    };
+    // تقسیم ستون‌ها به g گروه پشت‌سرهم؛ خروجی null اگر جا نشود
+    const layout = (size, g) => {
+      const widths = colWidths(size);
+      const per = Math.ceil(cols.length / g);
+      const groups = [];
+      for (let a = 0; a < cols.length; a += per) {
+        const idx = [];
+        for (let k = a; k < Math.min(a + per, cols.length); k++) idx.push(k);
+        groups.push({ idx, total: idx.reduce((t, k) => t + widths[k], 0) });
+      }
+      const worst = Math.max(...groups.map((x) => x.total));
+      return { widths, groups, worst };
+    };
 
-    let textW = 0;
-    for (const l of lines) {
-      ctx.font = `700 ${l.title ? Math.round(fs * 1.12) : fs}px ${family}`;
-      textW = Math.max(textW, ctx.measureText(l.text).width);
+    // هدف: فونت درشت؛ کمترین تعداد طبقه که جا شود، وگرنه فونت کمی کوچک‌تر
+    let fs = Math.max(12, Math.round(w * st.fontRatio));
+    const maxGroups = st.maxGroups || 3;
+    let L = null;
+    for (; fs >= 12 && !L; fs--) {
+      for (let g = 1; g <= maxGroups; g++) {
+        const t = layout(fs, g);
+        if (t.worst <= avail) { L = t; break; }
+      }
     }
-    const boxW = Math.min(maxBoxW, Math.ceil(textW + pad * 2));
-    const boxH = lines.length * lineH + pad * 1.2;
-    const x = w - margin - boxW;
-    const y = margin;
+    fs += 1;
+    if (!L) { fs = 12; L = layout(fs, maxGroups); }
+    const k = L.worst > avail ? avail / L.worst : 1; // آخرین چاره: فشرده‌سازی افقی
 
-    // کادر
-    const r = fs * 0.5;
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + boxW, y, x + boxW, y + boxH, r);
-    ctx.arcTo(x + boxW, y + boxH, x, y + boxH, r);
-    ctx.arcTo(x, y + boxH, x, y, r);
-    ctx.arcTo(x, y, x + boxW, y, r);
-    ctx.closePath();
-    ctx.fillStyle = "rgba(0,0,0,0.78)";
-    ctx.fill();
-    ctx.lineWidth = Math.max(3, fs * 0.1);
-    ctx.strokeStyle = "#ffd54a";
-    ctx.stroke();
+    const lineH = Math.round(fs * 1.5);
+    const groupH = lineH * 2 + Math.round(fs * 0.5);
+    const barH = groupH * L.groups.length + Math.round(fs * 0.2);
+    const y0 = h - barH;
+    ctx.fillStyle = `rgba(0,0,0,${st.bgOpacity ?? 0.6})`;
+    ctx.fillRect(0, y0, w, barH);
 
-    // متن
-    let ty = y + pad * 0.6 + lineH / 2;
-    for (const l of lines) {
-      ctx.font = `700 ${l.title ? Math.round(fs * 1.12) : fs}px ${family}`;
-      ctx.fillStyle = l.title ? "#ffd54a" : "#ffffff";
-      ctx.fillText(l.text, x + boxW - pad, ty, innerMax);
-      ty += lineH;
-    }
+    ctx.textAlign = "center";
+    L.groups.forEach((grp, gi) => {
+      const total = grp.total * k;
+      let x = (w + total) / 2; // وسط‌چین؛ ستون اول سمت راست
+      const yL = y0 + gi * groupH + Math.round(fs * 0.3) + lineH / 2;
+      const yV = yL + lineH;
+      if (gi > 0) {
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        ctx.fillRect(w * 0.03, y0 + gi * groupH, w * 0.94, 1);
+      }
+      grp.idx.forEach((ci, n) => {
+        const cw = L.widths[ci] * k;
+        const cx = x - cw / 2;
+        ctx.font = `700 ${fs}px ${family}`;
+        ctx.fillStyle = "#ffd54a";
+        ctx.fillText(cols[ci].label, cx, yL, cw - 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(String(cols[ci].value), cx, yV, cw - 2);
+        if (n < grp.idx.length - 1) {
+          ctx.fillStyle = "rgba(255,255,255,0.25)";
+          ctx.fillRect(x - cw, y0 + gi * groupH + fs * 0.4, 1, groupH - fs * 0.6);
+        }
+        x -= cw;
+      });
+    });
   }
   return { blob: await toBlob(c, "image/jpeg", CONFIG.photos.quality), width: w, height: h };
 }

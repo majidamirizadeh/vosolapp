@@ -105,6 +105,7 @@ export function createDownloadsModule() {
 
   return {
     id: "downloads",
+    nav: false,
     title: "دانلودها",
     icon: "⬇️",
     mount(container) {

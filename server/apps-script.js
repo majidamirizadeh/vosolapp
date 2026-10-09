@@ -6,7 +6,8 @@
  * بهبودها نسبت به نسخه قبل:
  *  ✔ ثبت تکراری ندارد: هر رکورد uid دارد؛ اگر گوشی به‌خاطر قطعی اینترنت دوباره بفرستد، ردیف دوم ساخته نمی‌شود.
  *  ✔ پاسخ صریح JSON ({ok:true} یا {ok:false,error}) تا گوشی خطا را «ارسال‌شده» حساب نکند.
- *  ✔ قفل (LockService): وقتی ۳۰ تا ۵۰ نفر هم‌زمان می‌فرستند، ردیف‌ها و پوشه‌ها قاطی/تکراری نمی‌شوند.
+ *  ✔ قفل (LockService) فقط دور نوشتن ردیف شیت (و ساخت پوشه جدید)؛ آپلود عکس‌ها بدون قفل و هم‌زمان انجام می‌شود.
+ *  ✔ ارسال دسته‌ای (submitBatch)، Cache شناسه پوشه‌ها، نوشتن همه ردیف‌ها با یک setValues.
  *  ✔ توکن مشترک (APP_TOKEN): درخواست‌های بیرونی بدون توکن رد می‌شوند.
  *  ✔ عکس‌ها با «همان نامی که گوشی ساخته» (شماره‌اشتراک.jpg یا شماره‌اشتراک_۱.jpg …) در پوشه تاریخ/کاربر ذخیره می‌شوند.
  *  ✔ ابتدا عکس‌ها، سپس ردیف شیت؛ اگر آپلود عکس خطا بدهد ردیفی ثبت نمی‌شود و گوشی بعداً دوباره می‌فرستد.
@@ -34,6 +35,7 @@ const SETTINGS = {
   ADMIN_KEY: "admin1405",
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
   PHOTOS_PER_CALL: 6,       // حداکثر تعداد عکس در هر درخواست getPhotos
+  MAX_BATCH: 5,             // حداکثر تعداد رکورد در هر درخواست submitBatch
 };
 // ====================================================
 
@@ -54,11 +56,10 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 41, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 42, time: new Date().toISOString() });
 }
 
 function doPost(e) {
-  let lock;
   try {
     const data = JSON.parse(e.postData.contents);
     if (data.token !== SETTINGS.APP_TOKEN) return json_({ ok: false, error: "توکن نامعتبر است" });
@@ -67,49 +68,116 @@ function doPost(e) {
       checkAdmin_(data);
       return json_(ADMIN_ACTIONS_[data.action](data));
     }
-    if (data.action !== "submit") return json_({ ok: false, error: "action نامعتبر" });
-    validate_(data);
-
-    lock = LockService.getScriptLock();
-    lock.waitLock(60000);
-
-    const sheet = getSheet_();
-
-    // رکورد تکراری؟ (همان uid قبلاً ثبت شده)
-    if (sheet.getLastRow() > 1) {
-      const found = sheet.getRange(2, UID_COL, sheet.getLastRow() - 1, 1)
-        .createTextFinder(data.uid).matchEntireCell(true).findNext();
-      if (found) return json_({ ok: true, duplicate: true });
+    // ارسال یک رکورد (سازگار با نسخه‌های قدیمی برنامه)
+    if (data.action === "submit") {
+      const r = submitBatch_([data])[0];
+      return json_(r.ok ? { ok: true, duplicate: !!r.duplicate, ms: r.ms } : { ok: false, error: r.error });
     }
-
-    // 1) عکس‌ها
-    const links = uploadPhotos_(data);
-
-    // 2) ردیف شیت
-    const row = [
-      new Date(), data.uid, data.userCode || "", data.userName || "", data.modeTitle || "", data.date || "",
-      data.omoor || "", data.city || "", data.leader || "", String(data.eshterak || ""),
-      Number(data.amount) || 0, (data.photos || []).length,
-      (data.photos || []).map(function (p) { return p.name; }).join(" ، "),
-      data.gpsLat == null ? "" : data.gpsLat, data.gpsLng == null ? "" : data.gpsLng,
-      data.gpsAccuracy == null ? "" : data.gpsAccuracy, data.createdAt || "",
-      links[0] || "", links[1] || "", links[2] || "", links[3] || "",
-      String(data.note || "").slice(0, 500),
-    ];
-    sheet.appendRow(row);
-    const r = sheet.getLastRow();
-    sheet.getRange(r, ESHTERAK_COL).setNumberFormat("@").setValue(String(data.eshterak || ""));
-    // کد کاربر و تاریخ هم متن بمانند (وگرنه «05» به ۵ و «1405/07/15» به تاریخ میلادی تبدیل می‌شود و فیلتر ادمین خراب می‌شود)
-    sheet.getRange(r, USERCODE_COL).setNumberFormat("@").setValue(String(data.userCode || ""));
-    sheet.getRange(r, DATE_COL).setNumberFormat("@").setValue(String(data.date || ""));
-    SpreadsheetApp.flush();
-
-    return json_({ ok: true });
+    // ارسال دسته‌ای: چند رکورد در یک درخواست؛ نتیجه هر رکورد جدا برگردانده می‌شود
+    if (data.action === "submitBatch") {
+      const list = (data.records || []).slice(0, SETTINGS.MAX_BATCH);
+      return json_({ ok: true, results: submitBatch_(list) });
+    }
+    return json_({ ok: false, error: "action نامعتبر" });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message ? err.message : err) });
-  } finally {
-    if (lock) { try { lock.releaseLock(); } catch (x) {} }
   }
+}
+
+/**
+ * ثبت چند رکورد:
+ *  ۱) بدون قفل: اعتبارسنجی، بررسی تکراری، آپلود عکس‌ها در Drive (کندترین بخش — هم‌زمان برای همه اکیپ‌ها)
+ *  ۲) فقط برای نوشتن در شیت: قفل کوتاه و یک setValues برای همه ردیف‌ها
+ * اگر آپلود عکس‌های یک رکورد خطا بدهد، فقط همان رکورد خطا می‌گیرد و گوشی بعداً دوباره می‌فرستد.
+ */
+function submitBatch_(list) {
+  const cache = CacheService.getScriptCache();
+  const results = [], pending = [];
+
+  list.forEach(function (data) {
+    const res = { uid: data && data.uid, ok: false };
+    results.push(res);
+    const t0 = Date.now();
+    try {
+      validate_(data);
+      // retry:false فقط از نسخه جدید برنامه برای «اولین ارسال» می‌آید؛ نسخه‌های قدیمی (بدون این فیلد) محتاطانه مثل ارسال مجدد بررسی می‌شوند
+      const retry = data.retry !== false;
+      if (cache.get("uid:" + data.uid)) { res.ok = true; res.duplicate = true; return; }
+      if (retry && uidExists_(data.uid)) {
+        cache.put("uid:" + data.uid, "1", 21600);
+        res.ok = true; res.duplicate = true; return;
+      }
+      const links = uploadPhotos_(data, retry);
+      res.ms = { photos: Date.now() - t0 };
+      pending.push({ res: res, uid: String(data.uid), row: buildRow_(data, links) });
+    } catch (err) {
+      res.error = String(err && err.message ? err.message : err);
+    }
+  });
+
+  if (pending.length) {
+    const lock = LockService.getScriptLock();
+    const t1 = Date.now();
+    try {
+      lock.waitLock(60000);
+      const sheet = getSheet_();
+      ensureFormats_(sheet);
+      const start = sheet.getLastRow() + 1;
+      const need = start + pending.length - 1 - sheet.getMaxRows();
+      if (need > 0) sheet.insertRowsAfter(sheet.getMaxRows(), need + 300);
+      sheet.getRange(start, 1, pending.length, HEADERS.length).setValues(pending.map(function (p) { return p.row; }));
+      SpreadsheetApp.flush(); // قبل از آزادسازی قفل، تا درخواست بعدی ردیف آخر را درست ببیند
+      pending.forEach(function (p) {
+        p.res.ok = true;
+        if (p.res.ms) p.res.ms.sheet = Date.now() - t1;
+        cache.put("uid:" + p.uid, "1", 21600);
+      });
+    } catch (err) {
+      pending.forEach(function (p) { p.res.error = String(err && err.message ? err.message : err); });
+    } finally {
+      try { lock.releaseLock(); } catch (x) {}
+    }
+  }
+  return results;
+}
+
+function buildRow_(data, links) {
+  return [
+    new Date(), data.uid, String(data.userCode || ""), data.userName || "", data.modeTitle || "", String(data.date || ""),
+    data.omoor || "", data.city || "", data.leader || "", String(data.eshterak || ""),
+    Number(data.amount) || 0, (data.photos || []).length,
+    (data.photos || []).map(function (p) { return p.name; }).join(" ، "),
+    data.gpsLat == null ? "" : data.gpsLat, data.gpsLng == null ? "" : data.gpsLng,
+    data.gpsAccuracy == null ? "" : data.gpsAccuracy, data.createdAt || "",
+    links[0] || "", links[1] || "", links[2] || "", links[3] || "",
+    String(data.note || "").slice(0, 500),
+  ];
+}
+
+/** آیا این uid قبلاً در شیت ثبت شده؟ (فقط برای ارسال مجدد صدا زده می‌شود) */
+function uidExists_(uid) {
+  const sheet = getSheet_();
+  if (sheet.getLastRow() < 2) return false;
+  return !!sheet.getRange(2, UID_COL, sheet.getLastRow() - 1, 1)
+    .createTextFinder(String(uid)).matchEntireCell(true).findNext();
+}
+
+/**
+ * ستون‌های کد کاربر، تاریخ و اشتراک یک بار برای کل ستون «متن» می‌شوند
+ * (وگرنه «05» به ۵ و «1405/07/15» به تاریخ میلادی تبدیل می‌شود و فیلتر ادمین خراب می‌شود).
+ * دیگر برای هر ردیف جداگانه فرمت نمی‌زنیم.
+ */
+function ensureFormats_(sheet) {
+  const cache = CacheService.getScriptCache();
+  if (cache.get("fmt1")) return;
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty("FMT1") !== "1") {
+    [USERCODE_COL, DATE_COL, ESHTERAK_COL].forEach(function (col) {
+      sheet.getRange(1, col, sheet.getMaxRows(), 1).setNumberFormat("@");
+    });
+    props.setProperty("FMT1", "1");
+  }
+  cache.put("fmt1", "1", 21600);
 }
 
 function validate_(d) {
@@ -147,18 +215,43 @@ function rootFolder_() {
   return it.hasNext() ? it.next() : DriveApp.createFolder(SETTINGS.ROOT_FOLDER_NAME);
 }
 
+/**
+ * پوشه «تاریخ/کد کاربر»؛ شناسه‌اش در Cache می‌ماند تا هر بار جست‌وجوی پوشه نکنیم.
+ * فقط وقتی پوشه باید ساخته شود قفل کوتاه می‌گیریم (تا دو درخواست هم‌زمان پوشه تکراری نسازند).
+ */
+function userFolder_(date, userCode) {
+  const dateName = String(date).replace(/[\\/]/g, "-");
+  const codeName = String(userCode || "نامشخص");
+  const cache = CacheService.getScriptCache();
+  const key = "fd:" + dateName + "|" + codeName;
+  const hit = cache.get(key);
+  if (hit) {
+    try { return DriveApp.getFolderById(hit); } catch (e) { cache.remove(key); }
+  }
+  const lock = LockService.getScriptLock();
+  lock.waitLock(60000);
+  try {
+    const f = child_(child_(rootFolder_(), dateName), codeName);
+    cache.put(key, f.getId(), 21600);
+    return f;
+  } finally {
+    try { lock.releaseLock(); } catch (x) {}
+  }
+}
+
 /** آپلود عکس‌ها؛ نام فایل همان نام ارسالی از گوشی است. خروجی: آرایه لینک‌ها */
-function uploadPhotos_(data) {
+function uploadPhotos_(data, retry) {
   const photos = data.photos || [];
   if (!photos.length) return [];
-  const dateFolder = child_(rootFolder_(), String(data.date).replace(/[\\/]/g, "-"));
-  const userFolder = child_(dateFolder, String(data.userCode || "نامشخص"));
+  const userFolder = userFolder_(data.date, data.userCode);
   const links = [];
   photos.forEach(function (p) {
     const name = String(p.name || "photo.jpg").replace(/[\\/:*?"<>|]/g, "");
-    // ارسال مجدد همین رکورد → فایل قبلی با همین نام جایگزین می‌شود، نه تکراری
-    const old = userFolder.getFilesByName(name);
-    while (old.hasNext()) old.next().setTrashed(true);
+    // فقط در ارسال مجدد: فایل قبلی با همین نام جایگزین می‌شود، نه تکراری (در ارسال اول جست‌وجو لازم نیست)
+    if (retry) {
+      const old = userFolder.getFilesByName(name);
+      while (old.hasNext()) old.next().setTrashed(true);
+    }
     const blob = Utilities.newBlob(Utilities.base64Decode(p.data), p.type || "image/jpeg", name);
     const file = userFolder.createFile(blob);
     if (SETTINGS.SHARE_PHOTOS_PUBLIC) file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -169,8 +262,11 @@ function uploadPhotos_(data) {
 
 /** اجرای دستی یک‌باره برای گرفتن مجوزهای Drive/Sheets (در ادیتور اجرا کنید) */
 function authorize() {
-  getSheet_();
+  const sheet = getSheet_();
   rootFolder_();
+  ensureFormats_(sheet);
+  LockService.getScriptLock();
+  CacheService.getScriptCache();
   Logger.log("OK");
 }
 
@@ -283,7 +379,7 @@ function filterRecords_(data) {
 
 function listRecords_(data) {
   const all = filterRecords_(data);
-  const limit = Math.min(Math.max(Number(data.limit) || SETTINGS.MAX_LIST, 1), 5000);
+  const limit = Math.min(Math.max(Number(data.limit) || SETTINGS.MAX_LIST, 1), 20000);
   return { ok: true, total: all.length, truncated: all.length > limit, records: all.slice(0, limit) };
 }
 

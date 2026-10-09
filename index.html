@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>فرم اکیپ‌های وصول مطالبات</title>
+  <title>گزارش میدانی</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/icons/icon-192.png">
   <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
@@ -17,10 +17,14 @@
 <body>
   <div id="app" hidden>
     <header class="app-header">
-      <button type="button" class="hdr-btn" id="logoutBtn" title="خروج">خروج</button>
+      <div class="hdr-side"></div>
       <div class="hdr-title" id="appTitle"></div>
-      <div class="hdr-user" id="userChip"></div>
+      <div class="hdr-side hdr-menu-wrap">
+        <button type="button" class="hdr-btn hdr-burger" id="menuBtn" aria-label="منو" aria-haspopup="true" aria-expanded="false">☰</button>
+        <div class="hdr-menu hidden" id="menuPanel" role="menu"></div>
+      </div>
     </header>
+    <div class="menu-backdrop hidden" id="menuBackdrop"></div>
     <div class="status" id="netStatus">در حال بررسی اتصال…</div>
     <main class="container" id="view"></main>
     <nav class="bottom-nav" id="nav" aria-label="بخش‌ها"></nav>

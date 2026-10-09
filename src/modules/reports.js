@@ -3,7 +3,7 @@
  */
 import { h, downloadBlob, toPersianDigits, formatMoney } from "../core/utils.js";
 import { parseJalali, todayJalali, jalaliKey, rangePreset, PRESETS } from "../core/jalali.js";
-import { toast, busy } from "../core/ui.js";
+import { toast, busy, rangeSelect } from "../core/ui.js";
 import { getPref } from "../core/prefs.js";
 import { listFor, summarize } from "./records.js";
 import { buildXlsx, buildPdf, buildZip, baseName } from "./exporter.js";
@@ -88,8 +88,7 @@ export function createReportsModule({ getUser }) {
         h("div", { class: "card" },
           h("h3", { class: "card-title" }, "بازه گزارش"),
           // انتخاب سریع بازه؛ بعد از انتخاب، تاریخ‌ها قابل ویرایش دستی هم هستند
-          h("div", { class: "chips" }, PRESETS.map(([k, label]) =>
-            h("button", { type: "button", class: "chip", onclick: () => { const r = rangePreset(k); from.value = r.from; to.value = r.to; showSummary(); } }, label))),
+          h("div", { class: "field" }, rangeSelect(PRESETS, (k) => { const r = rangePreset(k); from.value = r.from; to.value = r.to; showSummary(); })),
           h("div", { class: "row2" },
             h("div", { class: "field" }, h("label", {}, "از تاریخ"), from),
             h("div", { class: "field" }, h("label", {}, "تا تاریخ"), to)

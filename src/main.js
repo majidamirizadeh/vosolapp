@@ -7,6 +7,7 @@ import { bus, EV } from "./core/bus.js";
 import { loadPrefs, getPref } from "./core/prefs.js";
 import { createRouter } from "./core/router.js";
 import { toast, alertBox, confirmBox } from "./core/ui.js";
+import { h } from "./core/utils.js";
 import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./modules/auth.js";
 import { showLogin } from "./modules/login.js";
 import { migrateLegacy, listFor } from "./modules/records.js";
@@ -77,6 +78,65 @@ function setupNetwork() {
   update();
 }
 
+/* ───────── منوی همبرگری (بالا-چپ): نام کاربر، تنظیمات، دانلودها، خروج ───────── */
+function setupMenu({ router, userLabel, doLogout }) {
+  const btn = document.getElementById("menuBtn");
+  const panel = document.getElementById("menuPanel");
+  const backdrop = document.getElementById("menuBackdrop");
+  const close = () => {
+    panel.classList.add("hidden");
+    backdrop.classList.add("hidden");
+    btn.setAttribute("aria-expanded", "false");
+  };
+  const item = (icon, label, run, cls = "") =>
+    h("button", { type: "button", class: "hdr-menu-item " + cls, role: "menuitem", onclick: () => { close(); run(); } },
+      h("span", {}, icon), h("span", {}, label));
+  panel.append(
+    h("div", { class: "hdr-menu-user" }, "👤 ", userLabel),
+    item("⚙️", "تنظیمات", () => router.show("settings")),
+    item("⬇️", "دانلودها", () => router.show("downloads")),
+    item("🚪", "خروج از حساب", doLogout, "danger")
+  );
+  btn.addEventListener("click", () => {
+    const open = panel.classList.contains("hidden");
+    panel.classList.toggle("hidden", !open);
+    backdrop.classList.toggle("hidden", !open);
+    btn.setAttribute("aria-expanded", String(open));
+  });
+  backdrop.addEventListener("click", close);
+  window.__closeMenu = close;
+}
+
+/* ───────── کلید برگشت گوشی: بستن پنجره/منو → رفتن به فرم → تأیید خروج ───────── */
+function setupBackGuard(router) {
+  let asking = false;
+  const guard = () => history.pushState({ guard: true }, "");
+  guard();
+  const onPop = async () => {
+    // ۱) پنجره بازِ پیام/تأیید → بسته شود
+    const overlay = document.querySelector(".modal-overlay");
+    if (overlay) { overlay.click(); guard(); return; }
+    // ۲) منو باز است → بسته شود
+    const menu = document.getElementById("menuPanel");
+    if (menu && !menu.classList.contains("hidden")) { window.__closeMenu?.(); guard(); return; }
+    // ۳) در حین کار (ارسال/ساخت فایل) کاری نکند
+    if (document.querySelector(".busy-overlay")) { guard(); return; }
+    // ۴) تب دیگر → برگشت به صفحه اصلی (فرم)
+    if (router.current && router.current !== "form") { await router.show("form"); guard(); return; }
+    // ۵) صفحه اصلی → تأیید خروج
+    if (asking) return;
+    asking = true;
+    const ok = await confirmBox("از برنامه خارج می‌شوید؟", { yes: "خروج", no: "ماندن", title: "خروج از برنامه" });
+    asking = false;
+    if (ok) {
+      window.removeEventListener("popstate", onPop);
+      history.back();
+      setTimeout(() => window.close(), 150);
+    } else guard();
+  };
+  window.addEventListener("popstate", onPop);
+}
+
 async function start() {
   document.title = CONFIG.appName;
   document.getElementById("appTitle").textContent = CONFIG.appName;
@@ -97,7 +157,7 @@ async function start() {
 
   user = currentUser();
   if (!user) user = await showLogin(document.body);
-  document.getElementById("userChip").textContent = user.name + (isTestUser(user) ? " (تست)" : isAdmin(user) ? " (ادمین)" : "");
+  const userLabel = user.name + (isTestUser(user) ? " (تست)" : isAdmin(user) ? " (ادمین)" : "");
   requestPersistence();
 
   const doLogout = async () => {
@@ -123,7 +183,8 @@ async function start() {
   router = createRouter(modules, document.getElementById("nav"), document.getElementById("view"));
   await router.mountAll();
   document.getElementById("app").hidden = false;
-  document.getElementById("logoutBtn").addEventListener("click", doLogout);
+  setupMenu({ router, userLabel, doLogout });
+  setupBackGuard(router);
   await router.show("form");
   router.refreshBadges();
   window.__app = { router, getUser };

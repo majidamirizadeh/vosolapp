@@ -6,8 +6,8 @@
 import { MODES } from "../../config/modes.js";
 import { OMOORS } from "../../config/omoors.js";
 import { h, downloadBlob, toPersianDigits, toLatinDigits, formatMoney } from "../core/utils.js";
-import { parseJalali, todayJalali, rangePreset, PRESETS } from "../core/jalali.js";
-import { toast, busy, alertBox, confirmBox } from "../core/ui.js";
+import { parseJalali, todayJalali, rangePreset, PRESETS, jalaliSpanDays } from "../core/jalali.js";
+import { toast, busy, alertBox, confirmBox, rangeSelect } from "../core/ui.js";
 import { createXlsx } from "../lib/xlsx.js";
 import { createZip } from "../lib/zip.js";
 import { createPdfFromJpegs } from "../lib/pdf.js";
@@ -128,13 +128,13 @@ export function createAdminModule({ getUser }) {
     );
   }
 
-  /** همه ردیف‌های فیلتر فعلی (تا ۵۰۰۰) — برای Excel و ZIP و PDF */
+  /** همه ردیف‌های فیلتر فعلی — برای Excel و ZIP و PDF */
   async function fetchAll() {
     const p = readFilters();
     if (!p) return null;
-    const res = await serverCall("listRecords", { ...p, limit: 5000 });
+    const res = await serverCall("listRecords", { ...p, limit: 20000 });
     if (!res.ok) { await fail(res); return null; }
-    if (res.truncated) toast(`فقط ۵۰۰۰ مورد اول از ${toPersianDigits(res.total)} مورد گرفته شد؛ بازه را محدودتر کنید`, "error");
+    if (res.truncated) toast(`فقط ${toPersianDigits((res.records || []).length)} مورد اول از ${toPersianDigits(res.total)} مورد گرفته شد؛ بازه را محدودتر کنید`, "error");
     return { recs: sortRecords(res.records || [], currentSort()), filters: p };
   }
 
@@ -358,8 +358,44 @@ export function createAdminModule({ getUser }) {
   const BATCH = 6; // باید ≤ PHOTOS_PER_CALL در اسکریپت سرور باشد
 
   /** ZIP کامل: فایل Excel + عکس‌ها (پوشه‌بندی امور / تاریخ / اکیپ) → مستقیم روی گوشی دانلود می‌شود */
+  const ZIP_MAX_DAYS = 10;
+
+  /** شرایط دانلود ZIP عکس‌ها: حداقل یک فیلتر (امور / تاریخ / اکیپ)، امور فقط یکی، تاریخ حداکثر ۱۰ روز */
+  function zipGate() {
+    const p = readFilters();
+    if (!p) return null;
+    const hasDate = !f.all.checked;
+    const hasOmoor = !!p.omoor;
+    const hasUser = !!p.userCode;
+    if (!hasDate && !hasOmoor && !hasUser) {
+      alertBox(`برای دانلود عکس‌های زیپ‌شده حداقل یکی از فیلترهای «امور»، «تاریخ» یا «اکیپ» را انتخاب کنید.\n\nمحدودیت‌ها:\n• امور: فقط یک امور\n• تاریخ: حداکثر ${toPersianDigits(ZIP_MAX_DAYS)} روز`, "فیلتر انتخاب نشده");
+      return null;
+    }
+    if (hasDate) {
+      const days = jalaliSpanDays(p.fromDate, p.toDate);
+      if (days > ZIP_MAX_DAYS) {
+        alertBox(`بازه تاریخ برای دانلود عکس‌ها حداکثر ${toPersianDigits(ZIP_MAX_DAYS)} روز است.\nبازه انتخابی شما ${toPersianDigits(days)} روز است.`, "بازه بیش از حد مجاز");
+        return null;
+      }
+    }
+    const lines = [
+      `امور: ${p.omoor || "همه (بدون فیلتر)"}`,
+      `تاریخ: ${hasDate ? toPersianDigits(`${p.fromDate} تا ${p.toDate}`) : "بدون فیلتر"}`,
+      `اکیپ: ${hasUser ? toPersianDigits(p.userCode) : "همه (بدون فیلتر)"}`,
+    ];
+    if (p.modeTitle) lines.push(`نوع عملیات: ${p.modeTitle}`);
+    if (p.eshterak) lines.push(`شماره اشتراک: ${toPersianDigits(p.eshterak)}`);
+    return { p, lines };
+  }
+
   async function photosZip() {
     links.replaceChildren();
+    const gate = zipGate();
+    if (!gate) return;
+    const ok = await confirmBox(
+      `محدودیت‌های دانلود عکس‌ها:\n• حداقل یک فیلتر (امور / تاریخ / اکیپ) لازم است\n• امور: فقط یک امور\n• تاریخ: حداکثر ${toPersianDigits(ZIP_MAX_DAYS)} روز\n• حداکثر ${toPersianDigits(MAX_ZIP_PHOTOS)} عکس در هر ZIP\n\nفیلتر انتخاب‌شده شما:\n${gate.lines.join("\n")}\n\nشروع شود؟`,
+      { yes: "شروع دانلود", title: "دانلود عکس‌های زیپ‌شده" });
+    if (!ok) return;
     const b = busy("در حال دریافت فهرست از سرور…");
     try {
       const got = await fetchAll();
@@ -445,23 +481,22 @@ export function createAdminModule({ getUser }) {
         h("div", { class: "card card-elevated" },
           h("h3", { class: "card-title" }, "فیلتر گزارش سرور"),
           field("رمز ادمین (برای تأیید دسترسی در سرور)", f.key),
-          h("div", { class: "chips" }, PRESETS.map(([k, label]) =>
-            h("button", { type: "button", class: "chip", onclick: () => {
-              if (k === "all") { f.all.checked = true; f.from.disabled = f.to.disabled = true; return; }
-              f.all.checked = false; f.from.disabled = f.to.disabled = false;
-              const r = rangePreset(k); f.from.value = r.from; f.to.value = r.to;
-            } }, label))),
+          h("div", { class: "field" }, rangeSelect(PRESETS, (k) => {
+            if (k === "all") { f.all.checked = true; f.from.disabled = f.to.disabled = true; return; }
+            f.all.checked = false; f.from.disabled = f.to.disabled = false;
+            const r = rangePreset(k); f.from.value = r.from; f.to.value = r.to;
+          })),
           h("div", { class: "row2" }, field("از تاریخ", f.from), field("تا تاریخ", f.to)),
           h("label", { class: "chk-row" }, f.all, "همه بازه (بدون محدودیت تاریخ)"),
           h("div", { class: "row2" }, field("کد اکیپ", f.user), field("شماره اشتراک", f.eshterak)),
           field("نوع عملیات", f.mode),
-          field("امور (همه امورها یا یک امور خاص)", f.omoor),
+          field("امور (برای ZIP عکس‌ها فقط یک امور)", f.omoor),
           field("مرتب‌سازی خروجی و جدول", f.sort),
           h("div", { class: "btn-group" },
             h("button", { type: "button", class: "btn btn-primary", onclick: fetchReport }, "📋 دریافت گزارش"),
             h("button", { type: "button", class: "btn btn-success", onclick: exportExcel }, "📗 خروجی Excel"),
             h("button", { type: "button", class: "btn btn-danger", onclick: exportPdf }, "📕 خروجی PDF"),
-            h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, "🗂 ZIP (عکس‌ها + Excel)")
+            h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, "🗂 ZIP عکس‌ها (حداقل یک فیلتر، تاریخ ≤ ۱۰ روز)")
           ),
           links
         ),

@@ -67,3 +67,12 @@ export function busy(text = "لطفاً صبر کنید…") {
     done: () => el.remove(),
   };
 }
+
+/** کلید بازشو برای انتخاب سریع بازه (امروز، هفته، ماه …) — onPick(kind) */
+export function rangeSelect(presets, onPick) {
+  const sel = h("select", { class: "range-select", "aria-label": "بازه سریع" },
+    h("option", { value: "" }, "📅 انتخاب بازه سریع…"),
+    presets.map(([k, label]) => h("option", { value: k }, label)));
+  sel.addEventListener("change", () => { if (sel.value) onPick(sel.value); });
+  return sel;
+}

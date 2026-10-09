@@ -79,6 +79,13 @@ function d2j(jdn) {
 export const toJalali = (gy, gm, gd) => d2j(g2d(gy, gm, gd));
 export const toGregorian = (jy, jm, jd) => d2g(j2d(jy, jm, jd));
 
+/** تعداد روزهای بازه (هر دو سر شامل) بین دو تاریخ شمسی YYYY/MM/DD */
+export function jalaliSpanDays(fromStr, toStr) {
+  const a = parseJalali(fromStr), b = parseJalali(toStr);
+  if (!a || !b) return NaN;
+  return Math.abs(j2d(b.jy, b.jm, b.jd) - j2d(a.jy, a.jm, a.jd)) + 1;
+}
+
 export function isLeapJalali(jy) {
   return jalCal(jy, false).leap === 0;
 }

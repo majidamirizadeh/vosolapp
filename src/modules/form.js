@@ -13,36 +13,30 @@ import { createRecord, updateRecord, markDeviceSaved } from "./records.js";
 import { saveFiles } from "./storage.js";
 
 const STAMP_LABELS = {
+  modeTitle: "عملیات",
   eshterak: "اشتراک",
   date: "تاریخ",
   omoor: "امور",
   city: "شهر",
   leader: "سرگروه",
-  amount: "مبلغ",
+  amount: "مبلغ (ریال)",
   userName: "کاربر",
+  gps: "GPS",
 };
 
-/** ساخت متن کادر روی عکس از مقادیر فرم */
+/** ساخت ستون‌های نوار پایین عکس از مقادیر فرم: هر ستون { label (عنوان)، value (مقدار) } */
 export function buildStampInfo(v) {
-  const rows = [];
-  let title = "";
+  const cols = [];
   for (const group of CONFIG.stamp.lines) {
-    const parts = [];
     for (const key of group) {
-      if (key === "modeTitle") { title = v.modeTitle; continue; }
-      if (key === "gps") {
-        if (v.gps?.lat != null) parts.push(`GPS: ${v.gps.lat.toFixed(5)} , ${v.gps.lng.toFixed(5)}`);
-        continue;
-      }
-      let val = v[key];
-      if (val === "" || val == null) continue;
-      if (key === "amount") val = `${formatMoney(val)} ریال`;
-      else val = toPersianDigits(val);
-      parts.push(`${STAMP_LABELS[key] || key}: ${val}`);
+      let val;
+      if (key === "gps") val = v.gps?.lat != null ? `\u202A${v.gps.lat.toFixed(5)}, ${v.gps.lng.toFixed(5)}\u202C` : ""; // LTR تا ترتیب اعداد برعکس نشود
+      else if (key === "amount") val = v.amount === "" || v.amount == null ? "" : formatMoney(v.amount);
+      else val = v[key] === "" || v[key] == null ? "" : toPersianDigits(v[key]);
+      if (val !== "") cols.push({ label: STAMP_LABELS[key] || key, value: val });
     }
-    if (parts.length) rows.push(parts.join("   |   "));
   }
-  return { title, rows };
+  return { cols };
 }
 
 export function createFormModule({ getUser, onEditDone }) {
@@ -288,10 +282,19 @@ export function createFormModule({ getUser, onEditDone }) {
       if (!wasEdit) await saveSticky(v);
 
       b.done();
+      // ارسال خودکار بلافاصله بعد از ذخیره (در پس‌زمینه) اگر آنلاین باشیم
+      const auto = getPref("autoSync") && navigator.onLine && serverConfigured() && canSend(user);
+      if (auto) {
+        sendRecord(rec.id).then((res) => {
+          if (res.skipped) return;
+          toast(res.ok ? "به سرور ارسال شد ✓" : "ارسال خودکار ناموفق بود؛ از تب «بایگانی» دوباره بفرستید", res.ok ? "success" : "error");
+        });
+      }
+      const sendNote = auto
+        ? "در حال ارسال خودکار به سرور… (وضعیت در تب «بایگانی»)"
+        : wasEdit ? "هنوز ارسال نشده است؛ از تب «بایگانی» ارسال کنید." : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید.";
       await alertBox(
-        wasEdit
-          ? `✅ تغییرات ذخیره شد${saveNote}\n\nعکس‌ها:\n${rec.photos.map((p) => p.name).join("\n")}\n\nهنوز ارسال نشده است؛ از تب «بایگانی» ارسال کنید.`
-          : `✅ ذخیره شد${saveNote}\n\nعکس‌ها:\n${rec.photos.map((p) => p.name).join("\n")}\n\nپس از اتصال به اینترنت از تب «بایگانی» ارسال کنید.`,
+        `${wasEdit ? "✅ تغییرات ذخیره شد" : "✅ ذخیره شد"}${saveNote}\n\nعکس‌ها:\n${rec.photos.map((p) => p.name).join("\n")}\n\n${sendNote}`,
         wasEdit ? "ویرایش موفق" : "ثبت موفق"
       );
       if (wasEdit) {
