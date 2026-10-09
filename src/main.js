@@ -25,43 +25,86 @@ let user = null;
 const getUser = () => user;
 let swReg = null;
 
-/* ───────── تشخیص نصب بودن برنامه (PWA) ───────── */
+/* ───────── نصب برنامه (PWA) ─────────
+ * رویداد نصب مرورگر ممکن است خیلی زود (قبل از ورود کاربر) بیاید؛ پس همین‌جا در ابتدای ماژول گرفته می‌شود.
+ */
+let deferredInstall = null;
+let installEventSeen;
+const installEventPromise = new Promise((r) => (installEventSeen = r));
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstall = e;
+  installEventSeen();
+});
+window.addEventListener("appinstalled", () => {
+  deferredInstall = null;
+  toast("برنامه نصب شد ✓ از این به بعد از آیکون صفحهٔ اصلی گوشی باز کنید", "success", { ms: 8000 });
+});
 
 function isAppInstalled() {
-  // حالت standalone / fullscreen یعنی از آیکون صفحهٔ اصلی باز شده
-  if (window.matchMedia("(display-mode: standalone)").matches) return true;
-  if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
-  if (window.matchMedia("(display-mode: minimal-ui)").matches) return true;
+  // وقتی از آیکون صفحهٔ اصلی باز شده باشد (تمام‌صفحه / standalone)
+  const dm = (q) => window.matchMedia(`(display-mode: ${q})`).matches;
+  if (dm("fullscreen") || dm("standalone") || dm("minimal-ui")) return true;
   // iOS Safari
   if (window.navigator.standalone === true) return true;
+  // اندروید TWA
+  if (document.referrer.startsWith("android-app://")) return true;
   return false;
 }
 
+const isIOS = () =>
+  /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+/** وقتی برنامه نصب است ولی در تب مرورگر باز شده، با این روش نصب بودن تشخیص داده می‌شود (کروم) */
+async function hasInstalledCopy() {
+  try {
+    if (!navigator.getInstalledRelatedApps) return false;
+    return (await navigator.getInstalledRelatedApps()).length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function offerInstall() {
+  const ok = await confirmBox(
+    "برنامه هنوز روی گوشی شما نصب نشده است.\nبا نصب، برنامه تمام‌صفحه و بدون نوار آدرس باز می‌شود و آفلاین هم کار می‌کند.",
+    { yes: "نصب", no: "بعداً", title: "نصب برنامه" }
+  );
+  if (!ok) return; // «بعداً» → دفعهٔ بعد که برنامه باز شد دوباره پیشنهاد می‌شود
+
+  if (deferredInstall) {
+    const ev = deferredInstall;
+    deferredInstall = null; // هر رویداد فقط یک بار قابل استفاده است
+    try {
+      await ev.prompt();
+      await ev.userChoice;
+    } catch (_) {
+      /* کاربر ممکن است لغو کند */
+    }
+    return;
+  }
+  // مرورگر نصب خودکار نمی‌دهد (مثل iOS) → راهنمای دستی
+  await alertBox(
+    isIOS()
+      ? "۱) در مرورگر Safari دکمهٔ اشتراک‌گذاری (□↑) را بزنید\n۲) گزینهٔ «Add to Home Screen» (افزودن به صفحهٔ آغاز) را انتخاب کنید\n۳) «Add» را بزنید و از آیکون باز کنید"
+      : "۱) منوی مرورگر (⋮ بالا-گوشه) را باز کنید\n۲) «Install app» (نصب برنامه) یا «Add to Home screen» را بزنید\n۳) بعد از نصب، از آیکون صفحهٔ اصلی باز کنید",
+    "راهنمای نصب"
+  );
+}
+
 /**
- * پیام نصب در هر بار باز شدن در مرورگر نشان داده می‌شود (تا وقتی برنامه نصب نشده).
- * اگر برنامه نصب شده باشد (باز شدن از آیکون) یا مرورگر نصب را پیشنهاد ندهد، نمایش داده نمی‌شود.
+ * در هر بار باز شدن بررسی می‌کند برنامه نصب است یا نه؛ اگر نصب نبود پیام نصب نشان می‌دهد.
+ * (کروم وقتی برنامه نصب باشد رویداد نصب نمی‌دهد؛ برای iOS هم راهنمای دستی نشان داده می‌شود.)
  */
-function setupInstallPrompt() {
+async function setupInstallPrompt() {
   if (isAppInstalled()) return;
-
-  let shown = false;
-
-  // مرورگر رویداد نصب را می‌دهد؛ با زدن کلید «نصب»، خود مرورگر برنامه را نصب می‌کند (یا میان‌بر می‌سازد)
-  window.addEventListener("beforeinstallprompt", (e) => {
-    e.preventDefault();
-    if (shown || isAppInstalled()) return;
-    shown = true;
-    setTimeout(async () => {
-      const ok = await confirmBox("نصب برنامه روی گوشی", { yes: "نصب", no: "بعداً" });
-      if (!ok) return; // «بعداً» → دفعه بعد که برنامه باز شد دوباره پیشنهاد می‌شود
-      try {
-        e.prompt();
-        await e.userChoice;
-      } catch (_) {
-        /* کاربر ممکن است لغو کند */
-      }
-    }, 1200);
-  });
+  if (!isIOS()) {
+    // تا ۳ ثانیه منتظر رویداد نصب مرورگر می‌مانیم
+    await Promise.race([installEventPromise, new Promise((r) => setTimeout(r, 3000))]);
+    if (!deferredInstall && (await hasInstalledCopy())) return;
+  }
+  if (isAppInstalled()) return;
+  await offerInstall();
 }
 
 /* ───────── به‌روزرسانی برنامه (Service Worker) ───────── */
@@ -191,6 +234,7 @@ async function start() {
     return alertBox("راه‌اندازی دیتابیس گوشی ممکن نشد:\n" + (e.message || e) + "\n\nاگر در حالت ناشناس (Incognito) هستید، خارج شوید.", "خطا");
   }
   registerSW();
+  setupInstallPrompt(); // هر بار باز شدن: اگر نصب نشده بود پیام نصب (بدون انتظار برای ورود)
   ensureFonts();
   setupNetwork();
 
@@ -226,7 +270,6 @@ async function start() {
   setupBackGuard(router);
   await router.show("form");
   router.refreshBadges();
-  setupInstallPrompt(); // پیام نصب فقط بار اول و فقط اگر هنوز نصب نشده باشد
   window.__app = { router, getUser };
 }
 
