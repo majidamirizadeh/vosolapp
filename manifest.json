@@ -1,10 +1,11 @@
 {
   "name": "فرم اکیپ‌های وصول مطالبات",
   "short_name": "وصول مطالبات",
-  "id": "./index.html",
+  "id": "./",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#0d6efd",
   "theme_color": "#0d6efd",
   "orientation": "portrait",
