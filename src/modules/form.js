@@ -11,6 +11,8 @@ import { getPref } from "../core/prefs.js";
 import { downscale, stampPhoto } from "./photos.js";
 import { createRecord, updateRecord, markDeviceSaved } from "./records.js";
 import { saveFiles } from "./storage.js";
+import { sendRecord, serverConfigured } from "./sync.js";
+import { canSend } from "./auth.js";
 
 const STAMP_LABELS = {
   modeTitle: "عملیات",
