@@ -25,6 +25,81 @@ let user = null;
 const getUser = () => user;
 let swReg = null;
 
+/* ───────── تشخیص نصب بودن برنامه (PWA) ───────── */
+const INSTALL_FLAG = "vosol_install_prompt_done";
+
+function isAppInstalled() {
+  // حالت standalone / fullscreen یعنی از آیکون صفحهٔ اصلی باز شده
+  if (window.matchMedia("(display-mode: standalone)").matches) return true;
+  if (window.matchMedia("(display-mode: fullscreen)").matches) return true;
+  if (window.matchMedia("(display-mode: minimal-ui)").matches) return true;
+  // iOS Safari
+  if (window.navigator.standalone === true) return true;
+  return false;
+}
+
+/**
+ * پیام نصب فقط در اولین باز شدن (در مرورگر) نشان داده می‌شود.
+ * اگر برنامه از قبل نصب شده باشد، هرگز نمایش داده نمی‌شود.
+ */
+function setupInstallPrompt() {
+  if (isAppInstalled()) return;
+  if (localStorage.getItem(INSTALL_FLAG) === "1") return;
+
+  let deferred = null;
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferred = e;
+  });
+  window.addEventListener("appinstalled", () => {
+    localStorage.setItem(INSTALL_FLAG, "1");
+    deferred = null;
+  });
+
+  // کمی صبر تا برنامه و رویداد beforeinstallprompt آماده شوند
+  setTimeout(async () => {
+    if (isAppInstalled()) return;
+    if (localStorage.getItem(INSTALL_FLAG) === "1") return;
+
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+
+    let msg;
+    let yesLabel;
+    if (deferred) {
+      msg = "برای دسترسی سریع‌تر و کار آفلاین، برنامه را روی صفحهٔ اصلی گوشی نصب کنید.";
+      yesLabel = "نصب برنامه";
+    } else if (isIOS) {
+      msg =
+        "برای نصب برنامه:\n" +
+        "۱) دکمهٔ Share (اشتراک‌گذاری) را بزنید\n" +
+        "۲) گزینهٔ «Add to Home Screen» یا «افزودن به صفحه اصلی» را انتخاب کنید";
+      yesLabel = "متوجه شدم";
+    } else {
+      msg =
+        "برای نصب برنامه، از منوی مرورگر گزینهٔ «نصب برنامه» یا «Add to Home screen» را انتخاب کنید.";
+      yesLabel = "متوجه شدم";
+    }
+
+    const ok = await confirmBox(msg, {
+      yes: yesLabel,
+      no: "بعداً",
+      title: "نصب برنامه",
+    });
+    // چه نصب بزند چه بعداً — فقط یک‌بار در اولین باز شدن نشان داده شود
+    localStorage.setItem(INSTALL_FLAG, "1");
+
+    if (ok && deferred) {
+      try {
+        deferred.prompt();
+        await deferred.userChoice;
+      } catch (_) {
+        /* کاربر ممکن است لغو کند */
+      }
+      deferred = null;
+    }
+  }, 1800);
+}
+
 /* ───────── به‌روزرسانی برنامه (Service Worker) ───────── */
 async function registerSW() {
   if (!("serviceWorker" in navigator)) return;
@@ -187,6 +262,7 @@ async function start() {
   setupBackGuard(router);
   await router.show("form");
   router.refreshBadges();
+  setupInstallPrompt(); // پیام نصب فقط بار اول و فقط اگر هنوز نصب نشده باشد
   window.__app = { router, getUser };
 }
 
