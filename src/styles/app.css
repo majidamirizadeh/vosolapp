@@ -89,7 +89,8 @@ input:focus, select:focus, textarea:focus {
 }
 .photo-box.filled { border-style: solid; border-color: var(--ok); }
 .photo-box img { width: 100%; height: 100%; object-fit: cover; }
-.photo-box input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.photo-box { cursor: pointer; }
+.hidden-file { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .photo-label {
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-size: .8rem; color: #555; pointer-events: none; text-align: center; padding: 4px;
