@@ -5,7 +5,7 @@ import { CONFIG } from "../../config/app.config.js";
 import { FIELDS, MODES } from "../../config/modes.js";
 import { todayJalali, parseJalali } from "../core/jalali.js";
 import { h, toLatinDigits, toPersianDigits, normalizeText, formatMoney } from "../core/utils.js";
-import { alertBox, confirmBox, toast, busy } from "../core/ui.js";
+import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
 import { kv } from "../core/db.js";
 import { getPref } from "../core/prefs.js";
 import { downscale, stampPhoto } from "./photos.js";
@@ -64,22 +64,47 @@ export function createFormModule({ getUser, onEditDone }) {
     photoBox.style.setProperty("--n", Math.min(mode().photoSlots.length, 4)); // تعداد ستون = تعداد عکس‌ها
     mode().photoSlots.forEach((label, i) => {
       const p = state.photos[i];
-      const input = h("input", {
-        type: "file",
-        accept: "image/*",
-        ...(CONFIG.photos.captureOnly ? { capture: "environment" } : {}),
-        "aria-label": label,
-        onchange: (e) => onPick(i, e.target),
-      });
-      const box = h("div", { class: "photo-box" + (p ? " filled" : "") },
+      const box = h("div", {
+        class: "photo-box" + (p ? " filled" : ""),
+        role: "button", tabindex: 0, "aria-label": label,
+        onclick: () => choosePhoto(i),
+        onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choosePhoto(i); } },
+      },
         p
           ? [h("img", { src: p.url, alt: label }), h("span", { class: "photo-tag" }, label)]
           : h("span", { class: "photo-label" }, h("b", {}, "📷"), label),
-        input,
         p && h("button", { type: "button", class: "photo-x", "aria-label": "حذف عکس", onclick: (e) => { e.stopPropagation(); removePhoto(i); } }, "✕")
       );
       photoBox.append(box);
     });
+  }
+
+  // دو ورودی فایل ثابت: دوربین و گالری (ورودی جدا در DOM نگه داشته می‌شود تا روی همه مرورگرهای موبایل کار کند)
+  let camInput, galInput, pickSlot = 0;
+
+  function ensurePickers() {
+    if (camInput) return;
+    const mk = (extra) => {
+      const el = h("input", { type: "file", accept: "image/*", class: "hidden-file", tabindex: -1, "aria-hidden": "true", ...extra,
+        onchange: (e) => onPick(pickSlot, e.target) });
+      document.body.append(el);
+      return el;
+    };
+    camInput = mk({ capture: "environment" });
+    galInput = mk({});
+  }
+
+  /** کلیک روی باکس عکس: انتخاب دوربین یا گالری */
+  async function choosePhoto(i) {
+    ensurePickers();
+    pickSlot = i;
+    if (CONFIG.photos.captureOnly) return camInput.click();
+    const how = await choiceBox(mode().photoSlots[i], [
+      { label: "📷 دوربین", value: "camera" },
+      { label: "🖼 انتخاب از گالری", value: "gallery", cls: "btn-secondary" },
+    ]);
+    if (how === "camera") camInput.click();
+    else if (how === "gallery") galInput.click();
   }
 
   async function onPick(i, input) {

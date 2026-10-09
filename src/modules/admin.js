@@ -14,6 +14,7 @@ import { createPdfFromJpegs } from "../lib/pdf.js";
 import { ensureFonts } from "./photos.js";
 import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
+import { splitTotals } from "./records.js";
 
 /** کلیدهای مرتب‌سازی — پیش‌فرض: امور */
 const SORT_KEYS = [
@@ -100,10 +101,12 @@ export function createAdminModule({ getUser }) {
     if (!raw.length) { result.append(h("p", { class: "muted" }, "برای این فیلترها موردی در سرور نیست.")); return; }
     const recs = sortRecords(raw, currentSort());
     const total = sum?.totalCount ?? list.total ?? recs.length;
+    const tot = sum && sum.collectAmount != null ? { collectTotal: sum.collectAmount, followedTotal: sum.followedAmount } : splitTotals(recs);
     result.append(
       h("div", { class: "stat-grid" },
         stat("تعداد کل", total),
-        h("div", { class: "stat" }, h("b", {}, sum ? formatMoney(sum.totalAmount) : "—"), h("span", {}, "جمع مبلغ (ریال)")),
+        h("div", { class: "stat" }, h("b", {}, formatMoney(tot.collectTotal)), h("span", {}, "جمع وصول (ریال)")),
+        h("div", { class: "stat" }, h("b", {}, formatMoney(tot.followedTotal)), h("span", {}, "جمع مبالغ پیگیری‌شده (ریال)")),
         stat("نمایش‌داده‌شده", recs.length)
       ),
       list.truncated && h("p", { class: "info-text" }, `فقط ${toPersianDigits(recs.length)} مورد اول از ${toPersianDigits(list.total)} مورد نمایش داده شد؛ فیلترها را محدودتر کنید.`),
@@ -174,13 +177,12 @@ export function createAdminModule({ getUser }) {
   async function buildAdminPdf(recs, filters) {
     await ensureFonts();
     const list = recs;
-    const totalAmt = list.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const tot = splitTotals(list); // هر اشتراک در هر جمع فقط یک مبلغ
     const byOmoor = {};
     for (const r of list) {
       const k = r.omoor || "—";
-      if (!byOmoor[k]) byOmoor[k] = { count: 0, amount: 0 };
+      if (!byOmoor[k]) byOmoor[k] = { count: 0 };
       byOmoor[k].count++;
-      byOmoor[k].amount += Number(r.amount) || 0;
     }
     const cols = [
       { h: "ردیف", w: 55, a: "c", v: (r, i) => toPersianDigits(i + 1) },
@@ -199,7 +201,7 @@ export function createAdminModule({ getUser }) {
     const k = tableW / cols.reduce((t, c) => t + c.w, 0);
     cols.forEach((c) => (c.w *= k));
 
-    const ROW = 44, HEAD = 52, TOP_FIRST = 380, TOP_NEXT = 100, BOTTOM = 70;
+    const ROW = 44, HEAD = 52, TOP_FIRST = 410, TOP_NEXT = 100, BOTTOM = 70;
     const pagesRows = [];
     let i = 0;
     const firstCap = Math.floor((PH - TOP_FIRST - BOTTOM - HEAD) / ROW);
@@ -238,7 +240,7 @@ export function createAdminModule({ getUser }) {
         ctx.fillText(`مرتب‌سازی: ${sortLabel}${filters.omoor ? "  |  امور: " + filters.omoor : ""}`, PW - M, 158);
         ctx.fillText(toPersianDigits(`تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 196);
 
-        const bx = M, by = 230, bw = 820, bh = 120;
+        const bx = M, by = 230, bw = 820, bh = 150;
         ctx.strokeStyle = "#c5cdd8";
         ctx.lineWidth = 2;
         ctx.strokeRect(bx, by, bw, bh);
@@ -250,8 +252,9 @@ export function createAdminModule({ getUser }) {
         ctx.fillText("خلاصه", bx + bw - 20, by + 32);
         ctx.fillStyle = "#222";
         ctx.font = `700 24px ${FONT}`;
-        ctx.fillText(`کل: ${toPersianDigits(list.length)} مورد`, bx + bw - 20, by + 70);
-        ctx.fillText(`جمع مبالغ: ${formatMoney(totalAmt)} ریال`, bx + bw - 20, by + 100);
+        ctx.fillText(`کل: ${toPersianDigits(list.length)} مورد`, bx + bw - 20, by + 66);
+        ctx.fillText(`جمع وصول: ${formatMoney(tot.collectTotal)} ریال`, bx + bw - 20, by + 96);
+        ctx.fillText(`جمع مبالغ پیگیری‌شده: ${formatMoney(tot.followedTotal)} ریال`, bx + bw - 20, by + 126);
         const omoorEntries = Object.entries(byOmoor).sort((a, b) => b[1].count - a[1].count).slice(0, 3);
         ctx.font = `400 20px ${FONT}`;
         ctx.fillStyle = "#555";

@@ -128,18 +128,47 @@ export async function remove(id) {
   bus.emit(EV.RECORDS_CHANGED);
 }
 
+/**
+ * جمع مبلغ بدون تکرار اشتراک: هر اشتراک ممکن است در ۴ نوع عملیات ثبت شده باشد؛
+ * برای هر شماره اشتراک فقط «یک» مبلغ حساب می‌شود:
+ *   اولویت اول: مبلغ «وصول مطالبات» (اگر چند وصول بود، بزرگ‌ترین مبلغ وصول)
+ *   اولویت دوم: بزرگ‌ترین مبلغ بین بقیه ثبت‌ها
+ */
+export function dedupAmount(list) {
+  const best = new Map();
+  for (const r of list) {
+    const key = toLatinDigits(String(r.eshterak ?? "")).replace(/\D/g, "") || `__${r.uid || r.id}`;
+    const amt = Number(r.amount) || 0;
+    const isCollect = (r.mode ? r.mode === "collect" : r.modeTitle === MODES.collect.title) && amt > 0;
+    const cur = best.get(key);
+    if (!cur || (isCollect && !cur.isCollect) || (isCollect === cur.isCollect && amt > cur.amt)) best.set(key, { amt, isCollect });
+  }
+  let sum = 0;
+  best.forEach((v) => (sum += v.amt));
+  return { total: sum, unique: best.size };
+}
+
+/** تفکیک جمع‌ها: «جمع وصول» = مبالغ وصول مطالبات؛ «جمع مبالغ پیگیری‌شده» = بدهی‌ها (اخطار، قطع کنتور، قطع کمربند). هر دو بدون تکرار اشتراک */
+export function splitTotals(list) {
+  const isCollect = (r) => (r.mode ? r.mode === "collect" : r.modeTitle === MODES.collect.title);
+  const c = dedupAmount(list.filter(isCollect));
+  const f = dedupAmount(list.filter((r) => !isCollect(r)));
+  return { collectTotal: c.total, followedTotal: f.total, collectUnique: c.unique, followedUnique: f.unique };
+}
+
 export function summarize(list) {
   const byMode = {};
-  let total = 0, sent = 0, pending = 0, photos = 0;
+  const groups = {};
+  let sent = 0, pending = 0, photos = 0;
   for (const r of list) {
-    byMode[r.modeTitle] = byMode[r.modeTitle] || { count: 0, amount: 0 };
-    byMode[r.modeTitle].count++;
-    byMode[r.modeTitle].amount += Number(r.amount) || 0;
-    total += Number(r.amount) || 0;
+    (groups[r.modeTitle] = groups[r.modeTitle] || []).push(r);
     photos += r.photos?.length || 0;
     r.status === "sent" ? sent++ : pending++;
   }
-  return { count: list.length, sent, pending, total, photos, byMode };
+  // تعداد = تعداد ثبت‌ها؛ مبلغ هر نوع عملیات = جمع بدون تکرار اشتراک در همان نوع
+  for (const [k, arr] of Object.entries(groups)) byMode[k] = { count: arr.length, amount: dedupAmount(arr).total };
+  const all = dedupAmount(list);
+  return { count: list.length, sent, pending, ...splitTotals(list), uniqueCount: all.unique, photos, byMode };
 }
 
 /**

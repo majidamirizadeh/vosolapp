@@ -18,7 +18,7 @@ const sortRecords = (list) => [...list].sort((a, b) => a.id - b.id);
 export function baseName(meta) {
   const d = (s) => String(s).replace(/\//g, "-");
   const range = meta.from === meta.to ? d(meta.from) : `${d(meta.from)}_تا_${d(meta.to)}`;
-  return safeFileName(`گزارش_${range}_${meta.userLabel || ""}`).replace(/-+/g, "-").replace(/-$/, "");
+  return safeFileName(`گزارش_${range}_${meta.userLabel || ""}${meta.modeTitle ? "_" + meta.modeTitle : ""}`).replace(/-+/g, "-").replace(/-$/, "");
 }
 
 /* ───────────────────────── Excel ───────────────────────── */
@@ -28,7 +28,7 @@ export async function buildXlsx(records, meta) {
 
   const data = {
     name: "داده‌ها",
-    title: `گزارش ${meta.from === meta.to ? meta.from : `${meta.from} تا ${meta.to}`} — ${meta.userLabel}`,
+    title: `گزارش ${meta.from === meta.to ? meta.from : `${meta.from} تا ${meta.to}`} — ${meta.userLabel}${meta.modeTitle ? " — " + meta.modeTitle : ""}`,
     columns: [
       { header: "ردیف", width: 7, type: "number" },
       { header: "تاریخ", width: 13 },
@@ -68,7 +68,9 @@ export async function buildXlsx(records, meta) {
     ],
     rows: [
       ...Object.entries(s.byMode).map(([k, v]) => [k, v.count, v.amount]),
-      ["جمع کل", s.count, s.total],
+      ["جمع وصول (بدون تکرار اشتراک)", s.collectUnique, s.collectTotal],
+      ["جمع مبالغ پیگیری‌شده (بدون تکرار اشتراک)", s.followedUnique, s.followedTotal],
+      ["کل ثبت‌ها", s.count, ""],
       ["ارسال شده", s.sent, ""],
       ["در انتظار ارسال", s.pending, ""],
       ["تعداد عکس‌ها", s.photos, ""],
@@ -110,7 +112,7 @@ export async function buildPdf(records, meta) {
   const k = tableW / cols.reduce((t, c) => t + c.w, 0);
   cols.forEach((c) => (c.w *= k));
 
-  const ROW = 46, HEAD = 56, TOP_FIRST = 420, TOP_NEXT = 120, BOTTOM = 80;
+  const ROW = 46, HEAD = 56, TOP_FIRST = 480, TOP_NEXT = 120, BOTTOM = 80;
   const pagesRows = [];
   let i = 0;
   const firstCap = Math.floor((PH - TOP_FIRST - BOTTOM - HEAD) / ROW);
@@ -146,12 +148,12 @@ export async function buildPdf(records, meta) {
       ctx.fillStyle = "#333";
       const range = meta.from === meta.to ? meta.from : `${meta.from} تا ${meta.to}`;
       ctx.fillText(toPersianDigits(`بازه گزارش: ${range}`), PW - M, 140);
-      ctx.fillText(`کاربر: ${meta.userLabel}`, PW - M, 182);
+      ctx.fillText(`کاربر: ${meta.userLabel}${meta.modeTitle ? "  |  نوع عملیات: " + meta.modeTitle : ""}`, PW - M, 182);
       ctx.fillText(toPersianDigits(`تاریخ تولید گزارش: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 224);
 
       // کادر خلاصه
       const modes = Object.entries(s.byMode);
-      const bx = M, by = 110, bw = 760, bh = 270;
+      const bx = M, by = 110, bw = 760, bh = 330;
       ctx.strokeStyle = "#c5cdd8";
       ctx.lineWidth = 2;
       ctx.strokeRect(bx, by, bw, bh);
@@ -173,8 +175,9 @@ export async function buildPdf(records, meta) {
       }
       ctx.font = `700 24px ${FONT}`;
       ctx.textAlign = "right";
-      ctx.fillText(`کل: ${toPersianDigits(s.count)} مورد — ارسال‌شده ${toPersianDigits(s.sent)} / در انتظار ${toPersianDigits(s.pending)}`, bx + bw - 24, by + bh - 62);
-      ctx.fillText(`جمع مبالغ: ${formatMoney(s.total)} ریال`, bx + bw - 24, by + bh - 24);
+      ctx.fillText(`کل: ${toPersianDigits(s.count)} مورد — ارسال‌شده ${toPersianDigits(s.sent)} / در انتظار ${toPersianDigits(s.pending)}`, bx + bw - 24, by + bh - 96);
+      ctx.fillText(`جمع وصول: ${formatMoney(s.collectTotal)} ریال`, bx + bw - 24, by + bh - 60);
+      ctx.fillText(`جمع مبالغ پیگیری‌شده: ${formatMoney(s.followedTotal)} ریال`, bx + bw - 24, by + bh - 24);
       y = TOP_FIRST - 20;
     }
 

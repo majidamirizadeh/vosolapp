@@ -1,6 +1,7 @@
 /**
  * تب «گزارش»: بازه تاریخ، خلاصه، خروجی Excel / PDF / ZIP
  */
+import { MODES } from "../../config/modes.js";
 import { h, downloadBlob, toPersianDigits, formatMoney } from "../core/utils.js";
 import { parseJalali, todayJalali, jalaliKey, rangePreset, PRESETS } from "../core/jalali.js";
 import { toast, busy, rangeSelect } from "../core/ui.js";
@@ -9,7 +10,7 @@ import { listFor, summarize } from "./records.js";
 import { buildXlsx, buildPdf, buildZip, baseName } from "./exporter.js";
 
 export function createReportsModule({ getUser }) {
-  let from, to, result, scopeNote;
+  let from, to, modeSel, result, scopeNote;
 
   async function collect() {
     const f = parseJalali(from.value), t = parseJalali(to.value);
@@ -17,8 +18,13 @@ export function createReportsModule({ getUser }) {
     const user = getUser();
     const all = await listFor(user, { allUsers: getPref("allUsersOnPhone") });
     const fk = jalaliKey(f.text), tk = jalaliKey(t.text);
-    const records = all.filter((r) => { const k = jalaliKey(r.date); return k >= Math.min(fk, tk) && k <= Math.max(fk, tk); });
+    const wantMode = modeSel.value;
+    const records = all.filter((r) => {
+      const k = jalaliKey(r.date);
+      return k >= Math.min(fk, tk) && k <= Math.max(fk, tk) && (!wantMode || r.mode === wantMode || r.modeTitle === MODES[wantMode]?.title);
+    });
     const meta = {
+      modeTitle: wantMode ? MODES[wantMode]?.title || "" : "",
       from: fk <= tk ? f.text : t.text,
       to: fk <= tk ? t.text : f.text,
       userLabel: getPref("allUsersOnPhone") ? "همه کاربران این گوشی" : user.name,
@@ -34,13 +40,16 @@ export function createReportsModule({ getUser }) {
     if (!s.count) { result.append(h("p", { class: "muted" }, "برای این بازه موردی ثبت نشده است.")); return; }
     result.append(
       h("div", { class: "stat-grid" },
-        stat("کل موارد", s.count), stat("ارسال شده", s.sent), stat("در انتظار", s.pending), stat("عکس‌ها", s.photos)
+        stat("کل موارد", s.count), stat("اشتراک یکتا", s.uniqueCount), stat("ارسال شده", s.sent), stat("در انتظار", s.pending), stat("عکس‌ها", s.photos)
       ),
       h("table", { class: "mini-table" },
         h("tbody", {}, Object.entries(s.byMode).map(([k, v]) =>
           h("tr", {}, h("td", {}, k), h("td", {}, `${toPersianDigits(v.count)} مورد`), h("td", {}, `${formatMoney(v.amount)} ریال`)))),
-        h("tfoot", {}, h("tr", {}, h("td", {}, "جمع"), h("td", {}, `${toPersianDigits(s.count)} مورد`), h("td", {}, `${formatMoney(s.total)} ریال`)))
-      )
+        h("tfoot", {},
+          h("tr", {}, h("td", {}, "جمع وصول"), h("td", {}, `${toPersianDigits(s.collectUnique)} اشتراک`), h("td", {}, `${formatMoney(s.collectTotal)} ریال`)),
+          h("tr", {}, h("td", {}, "جمع مبالغ پیگیری‌شده"), h("td", {}, `${toPersianDigits(s.followedUnique)} اشتراک`), h("td", {}, `${formatMoney(s.followedTotal)} ریال`)))
+      ),
+      h("p", { class: "info-text" }, "جمع وصول = مبالغ وصول مطالبات؛ جمع مبالغ پیگیری‌شده = بدهی‌ها (اخطار و قطع). در هر جمع، هر شماره اشتراک فقط یک بار و با بزرگ‌ترین مبلغ حساب می‌شود.")
     );
   }
 
@@ -80,6 +89,9 @@ export function createReportsModule({ getUser }) {
     async mount(container) {
       from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
       to = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
+      modeSel = h("select", { "aria-label": "نوع عملیات", onchange: () => { result.replaceChildren(); } },
+        h("option", { value: "" }, "همه عملیات‌ها"),
+        Object.entries(MODES).map(([k, m]) => h("option", { value: k }, m.title)));
       result = h("div", { class: "report-result" });
       scopeNote = h("div", { class: "info-text" });
       shareBtn = h("button", { type: "button", class: "btn btn-secondary btn-sm hidden", onclick: () => lastShare && navigator.share({ files: [new File([lastShare.blob], lastShare.file, { type: lastShare.blob.type })] }).catch(() => {}) }, "اشتراک‌گذاری آخرین فایل (واتساپ، ایتا، …)");
@@ -93,6 +105,7 @@ export function createReportsModule({ getUser }) {
             h("div", { class: "field" }, h("label", {}, "از تاریخ"), from),
             h("div", { class: "field" }, h("label", {}, "تا تاریخ"), to)
           ),
+          h("div", { class: "field" }, h("label", {}, "نوع عملیات (برای خلاصه و همه خروجی‌ها)"), modeSel),
           scopeNote,
           h("button", { type: "button", class: "btn btn-secondary", onclick: showSummary }, "نمایش خلاصه"),
           result
