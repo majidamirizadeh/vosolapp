@@ -40,6 +40,10 @@ function modal(content, buttons) {
   });
 }
 
+/** انتخاب بین چند گزینه؛ مقدار گزینه انتخابی یا null (بستن) */
+export const choiceBox = (title, options) =>
+  modal([h("h3", {}, title)], options.map((o) => ({ label: o.label, cls: o.cls || "btn-primary", value: o.value })));
+
 const msgNode = (m) => (m instanceof Node ? m : h("p", { style: "white-space:pre-line" }, m));
 
 export const alertBox = (message, title) =>
