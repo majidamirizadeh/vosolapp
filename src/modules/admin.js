@@ -470,7 +470,7 @@ export function createAdminModule({ getUser }) {
     title: "گزارش سرور",
     icon: ICONS.admin,
     mount(container) {
-      f.key = h("input", { type: "password", dir: "ltr", class: "ltr-in", autocomplete: "off", placeholder: "همان رمز ورود ادمین" });
+      f.key = h("input", { type: "password", name: "admin-key", dir: "ltr", class: "ltr-in", autocomplete: "new-password", placeholder: "همان رمز ورود ادمین" });
       f.from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/01" });
       f.to = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/30" });
       f.all = h("input", { type: "checkbox", onchange: () => { f.from.disabled = f.to.disabled = f.all.checked; } });

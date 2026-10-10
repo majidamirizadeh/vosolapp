@@ -139,7 +139,8 @@ export function createFormModule({ getUser, onEditDone }) {
     const common = { id: `f-${f.key}`, autocomplete: "off", enterkeyhint: "next" };
     let input;
     if (f.type === "digits") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in" });
-    else if (f.type === "money") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "مثال: 1,250,000" });
+    // autocomplete معتبر «transaction-amount» تا مرورگر پیشنهاد رمز/نام کاربری ذخیره‌شده را برای مبلغ نشان ندهد
+    else if (f.type === "money") input = h("input", { ...common, autocomplete: "transaction-amount", name: "txn-amount", "data-lpignore": "true", "data-1p-ignore": "true", type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "مثال: 1,250,000" });
     else if (f.type === "shamsi") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
     else if (f.type === "textarea") input = h("textarea", { ...common, rows: 2, placeholder: f.placeholder || "", maxlength: 500 });
     else if (f.type === "select") {
