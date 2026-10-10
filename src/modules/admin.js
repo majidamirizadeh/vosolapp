@@ -15,6 +15,7 @@ import { ensureFonts } from "./photos.js";
 import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
 import { splitTotals } from "./records.js";
+import { ICONS } from "../core/icons.js";
 
 /** کلیدهای مرتب‌سازی — پیش‌فرض: امور */
 const SORT_KEYS = [
@@ -118,11 +119,11 @@ export function createAdminModule({ getUser }) {
       ),
       h("div", { class: "table-scroll" },
         h("table", { class: "data-table" },
-          h("thead", {}, h("tr", {}, ["تاریخ", "اکیپ", "نوع عملیات", "امور", "شهر", "اشتراک", "مبلغ", "توضیحات", "عکس‌ها"].map((t) => h("th", {}, t)))),
+          h("thead", {}, h("tr", {}, ["تاریخ", "اکیپ", "نوع عملیات", "امور", "شهر/بخش", "آبادی", "اشتراک", "مبلغ", "توضیحات", "عکس‌ها"].map((t) => h("th", {}, t)))),
           h("tbody", {}, recs.map((r) =>
             h("tr", {},
               h("td", {}, toPersianDigits(r.date)), h("td", {}, r.userName || r.userCode), h("td", {}, r.modeTitle),
-              h("td", {}, r.omoor), h("td", {}, r.city), h("td", { dir: "ltr" }, toPersianDigits(r.eshterak)),
+              h("td", {}, r.omoor), h("td", {}, r.city), h("td", {}, r.abadi || ""), h("td", { dir: "ltr" }, toPersianDigits(r.eshterak)),
               h("td", {}, formatMoney(r.amount)),
               h("td", { style: "white-space:normal;min-width:120px" }, r.note || ""),
               h("td", {}, (r.photoLinks || []).map((u, i) => h("a", { href: u, target: "_blank", rel: "noopener" }, `عکس ${toPersianDigits(i + 1)}`)))
@@ -151,13 +152,13 @@ export function createAdminModule({ getUser }) {
       columns: [
         { header: "ردیف", width: 7, type: "number" }, { header: "تاریخ", width: 13 }, { header: "کد اکیپ", width: 9 },
         { header: "نام اکیپ", width: 16 }, { header: "نوع عملیات", width: 20 }, { header: "امور", width: 18 },
-        { header: "شهر", width: 16 }, { header: "سرگروه", width: 18 }, { header: "شماره اشتراک", width: 15 },
+        { header: "شهر/بخش", width: 16 }, { header: "آبادی", width: 16 }, { header: "سرگروه", width: 18 }, { header: "شماره اشتراک", width: 15 },
         { header: "مبلغ (ریال)", width: 16, type: "number" }, { header: "تعداد عکس", width: 10, type: "number" },
         { header: "نام فایل عکس‌ها", width: 34 }, { header: "عرض جغرافیایی", width: 14 }, { header: "طول جغرافیایی", width: 14 },
         { header: "زمان ثبت", width: 20 }, { header: "توضیحات", width: 30 }, { header: "لینک عکس‌ها", width: 60 },
       ],
       rows: recs.map((r, i) => [
-        i + 1, r.date, r.userCode, r.userName, r.modeTitle, r.omoor, r.city, r.leader, r.eshterak,
+        i + 1, r.date, r.userCode, r.userName, r.modeTitle, r.omoor, r.city, r.abadi || "", r.leader, r.eshterak,
         Number(r.amount) || 0, Number(r.photoCount) || 0, r.photoNames, r.gpsLat ?? "", r.gpsLng ?? "",
         r.serverTime, r.note || "", (r.photoLinks || []).join("  "),
       ]),
@@ -190,7 +191,8 @@ export function createAdminModule({ getUser }) {
       { h: "اکیپ", w: 140, v: (r) => r.userName || r.userCode },
       { h: "نوع عملیات", w: 170, v: (r) => r.modeTitle },
       { h: "امور", w: 160, v: (r) => r.omoor },
-      { h: "شهر", w: 120, v: (r) => r.city },
+      { h: "شهر/بخش", w: 130, v: (r) => r.city },
+      { h: "آبادی", w: 110, v: (r) => r.abadi || "" },
       { h: "سرگروه", w: 150, v: (r) => r.leader },
       { h: "اشتراک", w: 130, a: "c", v: (r) => toPersianDigits(r.eshterak) },
       { h: "مبلغ (ریال)", w: 160, a: "c", v: (r) => formatMoney(r.amount) },
@@ -466,7 +468,7 @@ export function createAdminModule({ getUser }) {
   return {
     id: "admin",
     title: "گزارش سرور",
-    icon: "🛰",
+    icon: ICONS.admin,
     mount(container) {
       f.key = h("input", { type: "password", dir: "ltr", class: "ltr-in", autocomplete: "off", placeholder: "همان رمز ورود ادمین" });
       f.from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/01" });
@@ -496,10 +498,10 @@ export function createAdminModule({ getUser }) {
           field("امور (برای ZIP عکس‌ها فقط یک امور)", f.omoor),
           field("مرتب‌سازی خروجی و جدول", f.sort),
           h("div", { class: "btn-group" },
-            h("button", { type: "button", class: "btn btn-primary", onclick: fetchReport }, "📋 دریافت گزارش"),
-            h("button", { type: "button", class: "btn btn-success", onclick: exportExcel }, "📗 خروجی Excel"),
-            h("button", { type: "button", class: "btn btn-danger", onclick: exportPdf }, "📕 خروجی PDF"),
-            h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, "🗂 ZIP عکس‌ها (حداقل یک فیلتر، تاریخ ≤ ۱۰ روز)")
+            h("button", { type: "button", class: "btn btn-primary", onclick: fetchReport }, h("span", { class: "ico-sm", html: ICONS.list }), "دریافت گزارش"),
+            h("button", { type: "button", class: "btn btn-success", onclick: exportExcel }, h("span", { class: "ico-sm", html: ICONS.sheet }), "خروجی Excel"),
+            h("button", { type: "button", class: "btn btn-danger", onclick: exportPdf }, h("span", { class: "ico-sm", html: ICONS.pdf }), "خروجی PDF"),
+            h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, h("span", { class: "ico-sm", html: ICONS.zip }), "ZIP عکس‌ها (حداقل یک فیلتر، تاریخ ≤ ۱۰ روز)")
           ),
           links
         ),

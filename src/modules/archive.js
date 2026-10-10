@@ -11,6 +11,7 @@ import { listFor, remove, markDeviceSaved } from "./records.js";
 import { sendRecord, sendMany, serverConfigured, TEST_USER_MSG } from "./sync.js";
 import { canSend } from "./auth.js";
 import { saveFiles } from "./storage.js";
+import { ICONS } from "../core/icons.js";
 
 export function createArchiveModule({ getUser, onEdit }) {
   let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn;
@@ -58,14 +59,14 @@ export function createArchiveModule({ getUser, onEdit }) {
     wrap.append(
       h("div", { class: "rec-row", onclick: toggle },
         h("div", { class: "rec-main" },
-          h("div", { class: "rec-l1" }, h("b", { dir: "ltr" }, toPersianDigits(r.eshterak)), "  ·  ", r.modeTitle, r.note && h("span", { class: "rec-note-ico", title: "دارای توضیحات" }, " 💬")),
+          h("div", { class: "rec-l1" }, h("b", { dir: "ltr" }, toPersianDigits(r.eshterak)), "  ·  ", r.modeTitle, r.note && h("span", { class: "rec-note-ico", title: "دارای توضیحات", html: ICONS.note })),
           h("div", { class: "rec-l2" }, `${toPersianDigits(r.date)}  ·  ${formatMoney(r.amount)} ریال${r.omoor ? "  ·  " + r.omoor : ""}`)
         ),
         sent
-          ? h("span", { class: "rec-ok" }, "✓ ارسال شد")
+          ? h("span", { class: "rec-ok" }, h("span", { class: "ico-sm", html: ICONS.check }), "ارسال شد")
           : h("button", { type: "button", class: "btn btn-success btn-xs", disabled: !allowed() || null, title: allowed() ? "" : TEST_USER_MSG,
               onclick: (e) => { e.stopPropagation(); sendOne(r.id); } }, "ارسال"),
-        h("span", { class: "chev" }, "▼")
+        h("span", { class: "chev", html: ICONS.chevron })
       )
     );
 
@@ -79,7 +80,7 @@ export function createArchiveModule({ getUser, onEdit }) {
       });
       wrap.append(
         h("div", { class: "rec-detail" },
-          h("div", {}, `امور: ${r.omoor || "—"}  |  شهر: ${r.city || "—"}`),
+          h("div", {}, `امور: ${r.omoor || "—"}  |  شهر/بخش: ${r.city || "—"}  |  آبادی: ${r.abadi || "—"}`),
           h("div", {}, `سرگروه: ${r.leader || "—"}`),
           getPref("allUsersOnPhone") && h("div", {}, `کاربر: ${r.userName || r.userCode}`),
           r.note && h("div", { class: "rec-note" }, "توضیحات: " + r.note),
@@ -144,7 +145,7 @@ export function createArchiveModule({ getUser, onEdit }) {
   return {
     id: "archive",
     title: "بایگانی",
-    icon: "🗃",
+    icon: ICONS.archive,
     badge: async () => (await pendingIds()).length,
     async mount(container) {
       listEl = h("div", { class: "records" });

@@ -35,7 +35,8 @@ export async function buildXlsx(records, meta) {
       { header: "نوع عملیات", width: 20 },
       { header: "شماره اشتراک", width: 15 },
       { header: "امور", width: 18 },
-      { header: "شهر", width: 16 },
+      { header: "شهر/بخش", width: 16 },
+      { header: "آبادی", width: 16 },
       { header: "سرگروه", width: 18 },
       { header: "مبلغ (ریال)", width: 16, type: "number" },
       { header: "تعداد عکس", width: 10, type: "number" },
@@ -48,7 +49,7 @@ export async function buildXlsx(records, meta) {
       { header: "توضیحات", width: 30 },
     ],
     rows: list.map((r, i) => [
-      i + 1, r.date, r.modeTitle, r.eshterak, r.omoor, r.city, r.leader, r.amount,
+      i + 1, r.date, r.modeTitle, r.eshterak, r.omoor, r.city, r.abadi || "", r.leader, r.amount,
       r.photos?.length || 0,
       (r.photos || []).map((p) => p.name).join(" ، "),
       r.gpsLat ?? "", r.gpsLng ?? "", r.userName || r.userCode,
@@ -101,7 +102,8 @@ export async function buildPdf(records, meta) {
     { h: "نوع عملیات", w: 200, v: (r) => r.modeTitle },
     { h: "شماره اشتراک", w: 160, a: "c", v: (r) => toPersianDigits(r.eshterak) },
     { h: "امور", w: 180, v: (r) => r.omoor },
-    { h: "شهر", w: 150, v: (r) => r.city },
+    { h: "شهر/بخش", w: 150, v: (r) => r.city },
+    { h: "آبادی", w: 130, v: (r) => r.abadi || "" },
     { h: "سرگروه", w: 190, v: (r) => r.leader },
     { h: "مبلغ (ریال)", w: 190, a: "c", v: (r) => formatMoney(r.amount) },
     { h: "عکس", w: 70, a: "c", v: (r) => toPersianDigits(r.photos?.length || 0) },
@@ -112,7 +114,7 @@ export async function buildPdf(records, meta) {
   const k = tableW / cols.reduce((t, c) => t + c.w, 0);
   cols.forEach((c) => (c.w *= k));
 
-  const ROW = 46, HEAD = 56, TOP_FIRST = 480, TOP_NEXT = 120, BOTTOM = 80;
+  const ROW = 46, HEAD = 56, TOP_FIRST = 560, TOP_NEXT = 120, BOTTOM = 80;
   const pagesRows = [];
   let i = 0;
   const firstCap = Math.floor((PH - TOP_FIRST - BOTTOM - HEAD) / ROW);
@@ -153,7 +155,7 @@ export async function buildPdf(records, meta) {
 
       // کادر خلاصه
       const modes = Object.entries(s.byMode);
-      const bx = M, by = 110, bw = 760, bh = 330;
+      const bx = M, by = 110, bw = 760, bh = 410;
       ctx.strokeStyle = "#c5cdd8";
       ctx.lineWidth = 2;
       ctx.strokeRect(bx, by, bw, bh);
@@ -166,7 +168,7 @@ export async function buildPdf(records, meta) {
       ctx.fillStyle = "#222";
       ctx.font = `400 24px ${FONT}`;
       let sy = by + 76;
-      for (const [name, v] of modes.slice(0, 4)) {
+      for (const [name, v] of modes.slice(0, 6)) {
         ctx.textAlign = "right";
         ctx.fillText(`${name}: ${toPersianDigits(v.count)} مورد`, bx + bw - 24, sy);
         ctx.textAlign = "left";

@@ -8,6 +8,7 @@ import { getPref, setPref } from "../core/prefs.js";
 import { bus, EV } from "../core/bus.js";
 import { pickFolder, clearFolder, status, usage, requestPersistence, folderApiSupported } from "./storage.js";
 import { userCount } from "./auth.js";
+import { ICONS } from "../core/icons.js";
 
 export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
   let box;
@@ -63,7 +64,7 @@ export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
     id: "settings",
     nav: false,
     title: "تنظیمات",
-    icon: "⚙️",
+    icon: ICONS.settings,
     mount(container) { box = container; },
     onShow: render,
   };

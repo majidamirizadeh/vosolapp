@@ -3,6 +3,7 @@
  */
 import { CONFIG } from "../../config/app.config.js";
 import { FIELDS, MODES } from "../../config/modes.js";
+import { isBakhsh } from "../../config/cities.js";
 import { todayJalali, parseJalali } from "../core/jalali.js";
 import { h, toLatinDigits, toPersianDigits, normalizeText, formatMoney } from "../core/utils.js";
 import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
@@ -13,13 +14,16 @@ import { createRecord, updateRecord, markDeviceSaved } from "./records.js";
 import { saveFiles } from "./storage.js";
 import { sendRecord, serverConfigured } from "./sync.js";
 import { canSend } from "./auth.js";
+import { acquirePosition, geoErrorMessage } from "./geo.js";
+import { ICONS } from "../core/icons.js";
 
 const STAMP_LABELS = {
   modeTitle: "عملیات",
   eshterak: "اشتراک",
   date: "تاریخ",
   omoor: "امور",
-  city: "شهر",
+  city: "شهر/بخش",
+  abadi: "آبادی",
   leader: "سرگروه",
   amount: "مبلغ (ریال)",
   userName: "کاربر",
@@ -49,7 +53,7 @@ export function createFormModule({ getUser, onEditDone }) {
     inputs: {},
     editing: null,         // وقتی در حال ویرایش رکورد در انتظار هستیم: { id, info }
   };
-  let root, photoBox, amountLabelEl, gpsInfo, gpsBtn, modeBtns, editBanner, saveBtn;
+  let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeBtns, editBanner, saveBtn;
 
   const mode = () => MODES[state.mode];
 
@@ -72,8 +76,8 @@ export function createFormModule({ getUser, onEditDone }) {
       },
         p
           ? [h("img", { src: p.url, alt: label }), h("span", { class: "photo-tag" }, label)]
-          : h("span", { class: "photo-label" }, h("b", {}, "📷"), label),
-        p && h("button", { type: "button", class: "photo-x", "aria-label": "حذف عکس", onclick: (e) => { e.stopPropagation(); removePhoto(i); } }, "✕")
+          : h("span", { class: "photo-label" }, h("i", { class: "ph-ico", html: ICONS.camera }), h("span", {}, label)),
+        p && h("button", { type: "button", class: "photo-x", "aria-label": "حذف عکس", html: ICONS.close, onclick: (e) => { e.stopPropagation(); removePhoto(i); } })
       );
       photoBox.append(box);
     });
@@ -100,8 +104,8 @@ export function createFormModule({ getUser, onEditDone }) {
     pickSlot = i;
     if (CONFIG.photos.captureOnly) return camInput.click();
     const how = await choiceBox(mode().photoSlots[i], [
-      { label: "📷 دوربین", value: "camera" },
-      { label: "🖼 انتخاب از گالری", value: "gallery", cls: "btn-secondary" },
+      { label: "دوربین", value: "camera" },
+      { label: "انتخاب از گالری", value: "gallery", cls: "btn-secondary" },
     ]);
     if (how === "camera") camInput.click();
     else if (how === "gallery") galInput.click();
@@ -139,10 +143,11 @@ export function createFormModule({ getUser, onEditDone }) {
     else if (f.type === "shamsi") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
     else if (f.type === "textarea") input = h("textarea", { ...common, rows: 2, placeholder: f.placeholder || "", maxlength: 500 });
     else if (f.type === "select") {
-      // لیست انتخابی (مثل «امور»)
+      // لیست انتخابی (مثل «امور»)؛ اگر optionsMap دارد (مثل «شهر/بخش») گزینه‌ها بعد از انتخاب امور پر می‌شود
       input = h("select", { ...common },
-        h("option", { value: "" }, `— ${f.label} را انتخاب کنید —`),
+        h("option", { value: "" }, f.optionsMap ? `ابتدا ${FIELDS.find((x) => x.key === f.dependsOn)?.label || "مقدار مرتبط"}` : "انتخاب کنید"),
         (f.options || []).map((o) => h("option", { value: o }, o)));
+      if (f.optionsMap) input.disabled = true;
     }
     else input = h("input", { ...common, type: "text" });
 
@@ -153,12 +158,38 @@ export function createFormModule({ getUser, onEditDone }) {
     });
     if (f.type === "shamsi") input.addEventListener("input", () => { input.value = toLatinDigits(input.value).replace(/[^\d/]/g, ""); });
 
+    if (f.key === "abadi") { input.disabled = true; input.placeholder = "فقط برای «بخش»"; } // با انتخاب «بخش…» در شهر/بخش فعال می‌شود
+
     state.inputs[f.key] = input;
     const label = h("label", { for: input.id }, f.label, f.required && h("span", { class: "req" }, " *"));
     if (f.labelByMode) amountLabelEl = label;
     // راهنما به‌صورت tooltip/placeholder تا چیدمان دو ستونی جمع بماند
     if (f.hint) input.title = f.hint;
     return h("div", { class: "field" + (f.wide ? " wide" : "") }, label, input);
+  }
+
+  /* ───────── «شهر/بخش» وابسته به «امور» ، «آبادی» وابسته به «شهر/بخش» ───────── */
+  const cityDef = FIELDS.find((x) => x.optionsMap);
+
+  /** فهرست شهر/بخش را از روی امور انتخاب‌شده می‌سازد؛ keep=true مقدار فعلی را (اگر در فهرست باشد) نگه می‌دارد */
+  function fillCityOptions(keep = false) {
+    const sel = state.inputs[cityDef.key];
+    const omoor = state.inputs[cityDef.dependsOn].value;
+    const list = cityDef.optionsMap[omoor] || [];
+    const prev = keep ? sel.value : "";
+    sel.replaceChildren(
+      h("option", { value: "" }, omoor ? "انتخاب کنید" : "ابتدا امور"),
+      ...list.map((o) => h("option", { value: o }, o)));
+    sel.disabled = !omoor;
+    sel.value = list.includes(prev) ? prev : "";
+  }
+
+  /** «آبادی» فقط وقتی فعال است که شهر/بخش با «بخش» شروع شود؛ در غیر این صورت غیرفعال و خالی می‌ماند */
+  function syncAbadi() {
+    const el = state.inputs.abadi;
+    const on = isBakhsh(state.inputs[cityDef.key].value);
+    el.disabled = !on;
+    if (!on) el.value = "";
   }
 
   function readValues() {
@@ -188,31 +219,47 @@ export function createFormModule({ getUser, onEditDone }) {
   }
 
   /* ───────── GPS ───────── */
-  function getGps() {
-    if (!navigator.geolocation) return alertBox("مرورگر شما از موقعیت مکانی پشتیبانی نمی‌کند");
+  let gpsBusy = false;
+
+  async function getGps() {
+    if (gpsBusy) return;
+    if (!navigator.geolocation) return alertBox(geoErrorMessage("unsupported"));
+    gpsBusy = true;
     gpsBtn.disabled = true;
-    gpsBtn.textContent = "در حال دریافت…";
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        state.gps = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };
-        showGps();
-        gpsBtn.disabled = false;
-        gpsBtn.textContent = "دریافت مجدد موقعیت";
-      },
-      (err) => {
-        toast("خطا در دریافت موقعیت: " + err.message, "error");
-        gpsBtn.disabled = false;
-        gpsBtn.textContent = "دریافت موقعیت فعلی";
-      },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
-    );
+    gpsBtn.classList.add("loading");
+    gpsInfo.textContent = "در حال دریافت…";
+    gpsInfo.removeAttribute("dir");
+    gpsAcc.textContent = "";
+    try {
+      // دقت‌های بهتر به‌مرور در همین فرم نمایش داده می‌شود
+      const fix = await acquirePosition({ onUpdate: (f) => { state.gps = f; showGps(); gpsInfo.classList.add("live"); } });
+      state.gps = fix;
+      toast("موقعیت ثبت شد ✓", "success", { ms: 1800 });
+    } catch (e) {
+      await alertBox(e.kind ? geoErrorMessage(e.kind) : "خطا در دریافت موقعیت: " + (e.message || e), "موقعیت مکانی (GPS)");
+    } finally {
+      gpsBusy = false;
+      gpsBtn.disabled = false;
+      gpsBtn.classList.remove("loading");
+      gpsInfo.classList.remove("live");
+      showGps();
+    }
   }
 
+  /** نمایش وضعیت GPS داخل خودِ دکمه (مختصات + دقت) */
   function showGps() {
     const g = state.gps;
-    gpsInfo.classList.toggle("hidden", g.lat == null);
-    if (g.lat != null) {
-      gpsInfo.textContent = `عرض: ${g.lat.toFixed(6)}  |  طول: ${g.lng.toFixed(6)}  |  دقت: ${toPersianDigits(g.accuracy)} متر`;
+    const has = g.lat != null;
+    gpsBtn.classList.toggle("has-fix", has);
+    gpsBtn.title = has ? "دریافت مجدد موقعیت" : "دریافت موقعیت فعلی";
+    if (has) {
+      gpsInfo.setAttribute("dir", "ltr");
+      gpsInfo.textContent = `${g.lat.toFixed(5)}, ${g.lng.toFixed(5)}`;
+      gpsAcc.textContent = g.accuracy != null ? `±${toPersianDigits(g.accuracy)}م` : "";
+    } else {
+      gpsInfo.removeAttribute("dir");
+      gpsInfo.textContent = "ثبت موقعیت فعلی";
+      gpsAcc.textContent = "";
     }
   }
 
@@ -340,13 +387,14 @@ export function createFormModule({ getUser, onEditDone }) {
       if (f.sticky || f.key === "date") continue;
       state.inputs[f.key].value = "";
     }
+    syncAbadi();
     state.gps = { lat: null, lng: null, accuracy: null };
     showGps();
-    gpsBtn.textContent = "دریافت موقعیت فعلی";
     revokePhotos();
     renderPhotos();
     state.inputs.eshterak.focus();
     window.scrollTo({ top: 0, behavior: "smooth" });
+    document.getElementById("view")?.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   /* ───────── ویرایش رکورد در انتظار ───────── */
@@ -358,11 +406,12 @@ export function createFormModule({ getUser, onEditDone }) {
       const el = state.inputs[f.key];
       el.value = f.sticky && sticky[f.key] ? sticky[f.key] : "";
       if (f.sticky && el.value !== (sticky[f.key] || "")) el.value = ""; // مقدار قدیمی که در فهرست نیست
+      if (f.key === cityDef.dependsOn) fillCityOptions(false); // فهرست شهر/بخش مربوط به همین امور
     }
+    syncAbadi();
     state.inputs.date.value = todayJalali();
     state.gps = { lat: null, lng: null, accuracy: null };
     showGps();
-    gpsBtn.textContent = "دریافت موقعیت فعلی";
     await setMode(state.mode, true);
   }
 
@@ -396,10 +445,11 @@ export function createFormModule({ getUser, onEditDone }) {
         el.append(h("option", { value: val }, val)); // مقدار قدیمی که در فهرست جدید نیست
       }
       el.value = val;
+      if (f.key === cityDef.dependsOn) fillCityOptions(false); // فهرست شهر/بخش مربوط به امور این مورد
     }
+    syncAbadi();
     state.gps = { lat: rec.gpsLat ?? null, lng: rec.gpsLng ?? null, accuracy: rec.gpsAccuracy ?? null };
     showGps();
-    gpsBtn.textContent = state.gps.lat != null ? "دریافت مجدد موقعیت" : "دریافت موقعیت فعلی";
     // عکس‌های فعلی در اسلات‌ها (قابل حذف/تعویض)
     state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
     state.photos = mode().photoSlots.map((_, i) => {
@@ -416,13 +466,14 @@ export function createFormModule({ getUser, onEditDone }) {
     editBanner.classList.remove("hidden");
     saveBtn.textContent = "ذخیره تغییرات";
     window.scrollTo({ top: 0 });
+    document.getElementById("view")?.scrollTo({ top: 0 });
     return true;
   }
 
   return {
     id: "form",
     title: "فرم جدید",
-    icon: "📝",
+    icon: ICONS.form,
     startEdit,
     async mount(container) {
       root = container;
@@ -430,8 +481,12 @@ export function createFormModule({ getUser, onEditDone }) {
         h("button", { type: "button", class: "mode-btn", "data-mode": key, onclick: () => setMode(key) }, m.title)
       );
       photoBox = h("div", { class: "photos" });
-      gpsInfo = h("div", { class: "gps-info hidden" });
-      gpsBtn = h("button", { type: "button", class: "btn btn-warning btn-xs", onclick: getGps }, "دریافت موقعیت فعلی");
+      gpsInfo = h("span", { class: "gps-val" }, "ثبت موقعیت فعلی");
+      gpsAcc = h("span", { class: "gps-acc" });
+      gpsBtn = h("button", { type: "button", class: "gps-btn", onclick: getGps, "aria-label": "دریافت موقعیت مکانی (GPS)" },
+        h("span", { class: "gps-lbl" }, "موقعیت (GPS)"),
+        h("span", { class: "gps-line" }, gpsInfo), gpsAcc,
+        h("span", { class: "gps-ico", html: ICONS.pin }));
 
       editBanner = h("div", { class: "edit-banner hidden" },
         h("b", {}, "ویرایش"),
@@ -442,16 +497,23 @@ export function createFormModule({ getUser, onEditDone }) {
         h("div", { class: "card" },
           editBanner,
           h("div", { class: "mode-btns" }, modeBtns),
-          h("div", { class: "field-grid" }, FIELDS.map(buildField)),
-          h("div", { class: "field gps-field" }, h("div", { class: "gps-row" }, h("label", {}, "موقعیت (GPS)"), gpsBtn), gpsInfo),
-          h("div", { class: "field" }, h("label", {}, "عکس‌ها"), photoBox),
+          h("div", { class: "field-grid" }, FIELDS.map(buildField), h("div", { class: "field gps-field" }, gpsBtn)),
+          h("div", { class: "field photos-field" }, h("label", {}, "عکس‌ها"), photoBox),
           saveBtn
         )
       );
 
+      // با تغییر امور، فهرست شهر/بخش عوض می‌شود؛ با تغییر شهر/بخش، «آبادی» فعال/غیرفعال می‌شود
+      state.inputs[cityDef.dependsOn].addEventListener("change", () => { fillCityOptions(false); syncAbadi(); });
+      state.inputs[cityDef.key].addEventListener("change", syncAbadi);
+
       // مقادیر اولیه
       const sticky = (await kv.get("sticky", {})) || {};
-      for (const f of FIELDS) if (f.sticky && sticky[f.key]) state.inputs[f.key].value = sticky[f.key];
+      for (const f of FIELDS) {
+        if (f.sticky && sticky[f.key]) state.inputs[f.key].value = sticky[f.key];
+        if (f.key === cityDef.dependsOn) fillCityOptions(false);
+      }
+      syncAbadi();
       state.inputs.date.value = todayJalali();
       await setMode(state.mode, true);
     },

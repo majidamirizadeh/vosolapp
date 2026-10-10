@@ -34,6 +34,7 @@ export async function createRecord(data, photos) {
       date: data.date,
       omoor: data.omoor,
       city: data.city,
+      abadi: data.abadi || "",
       leader: data.leader,
       eshterak: key,
       amount: Number(data.amount) || 0,
@@ -84,6 +85,7 @@ export async function updateRecord(id, data, photos) {
         date: data.date,
         omoor: data.omoor,
         city: data.city,
+        abadi: data.abadi || "",
         leader: data.leader,
         eshterak: key,
         amount: Number(data.amount) || 0,
@@ -129,7 +131,7 @@ export async function remove(id) {
 }
 
 /**
- * جمع مبلغ بدون تکرار اشتراک: هر اشتراک ممکن است در ۴ نوع عملیات ثبت شده باشد؛
+ * جمع مبلغ بدون تکرار اشتراک: هر اشتراک ممکن است در چند نوع عملیات ثبت شده باشد؛
  * برای هر شماره اشتراک فقط «یک» مبلغ حساب می‌شود:
  *   اولویت اول: مبلغ «وصول مطالبات» (اگر چند وصول بود، بزرگ‌ترین مبلغ وصول)
  *   اولویت دوم: بزرگ‌ترین مبلغ بین بقیه ثبت‌ها
@@ -148,7 +150,7 @@ export function dedupAmount(list) {
   return { total: sum, unique: best.size };
 }
 
-/** تفکیک جمع‌ها: «جمع وصول» = مبالغ وصول مطالبات؛ «جمع مبالغ پیگیری‌شده» = بدهی‌ها (اخطار، قطع کنتور، قطع کمربند). هر دو بدون تکرار اشتراک */
+/** تفکیک جمع‌ها: «جمع وصول» = مبالغ وصول مطالبات؛ «جمع مبالغ پیگیری‌شده» = بدهی‌ها (اخطار، قطع کنتور، قطع کمربند، فک پلمپ، مسدودی حساب). هر دو بدون تکرار اشتراک */
 export function splitTotals(list) {
   const isCollect = (r) => (r.mode ? r.mode === "collect" : r.modeTitle === MODES.collect.title);
   const c = dedupAmount(list.filter(isCollect));

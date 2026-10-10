@@ -10,6 +10,7 @@
 import { h, downloadBlob, fetchWithTimeout, formatBytes } from "../core/utils.js";
 import { kv } from "../core/db.js";
 import { toast, busy } from "../core/ui.js";
+import { ICONS } from "../core/icons.js";
 
 const CACHE = "app-downloads-v1";
 const base = "downloads/";
@@ -88,7 +89,7 @@ export function createDownloadsModule() {
       const btn = h("button", { type: "button", class: "btn btn-primary btn-sm", disabled: offline && !isCached, onclick: (e) => download(f.name, e.currentTarget) }, "دانلود");
       rows.push(
         h("div", { class: "dl-item" },
-          h("div", { class: "dl-icon" }, "📄"),
+          h("div", { class: "dl-icon", html: ICONS.file }),
           h("div", { class: "dl-meta" },
             h("div", { class: "dl-name", dir: "auto" }, f.name),
             h("div", { class: "info-text" }, [f.size != null ? formatBytes(f.size) : "", isCached ? "• آماده برای دانلود آفلاین" : ""].filter(Boolean).join(" "))
@@ -107,7 +108,7 @@ export function createDownloadsModule() {
     id: "downloads",
     nav: false,
     title: "دانلودها",
-    icon: "⬇️",
+    icon: ICONS.downloads,
     mount(container) {
       listEl = h("div", { class: "dl-list" });
       noteEl = h("div", { class: "info-text" });

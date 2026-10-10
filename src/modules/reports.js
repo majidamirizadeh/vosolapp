@@ -8,6 +8,7 @@ import { toast, busy, rangeSelect } from "../core/ui.js";
 import { getPref } from "../core/prefs.js";
 import { listFor, summarize } from "./records.js";
 import { buildXlsx, buildPdf, buildZip, baseName } from "./exporter.js";
+import { ICONS } from "../core/icons.js";
 
 export function createReportsModule({ getUser }) {
   let from, to, modeSel, result, scopeNote;
@@ -53,6 +54,10 @@ export function createReportsModule({ getUser }) {
     );
   }
 
+  const tile = (kind, icon, title, sub) =>
+    h("button", { type: "button", class: "tile tile-" + kind, onclick: () => exportAs(kind) },
+      h("span", { class: "tile-ico", html: icon }), h("b", {}, title), h("small", {}, sub));
+
   const stat = (label, n) => h("div", { class: "stat" }, h("b", {}, toPersianDigits(n)), h("span", {}, label));
 
   async function exportAs(kind) {
@@ -85,7 +90,7 @@ export function createReportsModule({ getUser }) {
   return {
     id: "reports",
     title: "گزارش",
-    icon: "📊",
+    icon: ICONS.reports,
     async mount(container) {
       from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
       to = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
@@ -112,9 +117,10 @@ export function createReportsModule({ getUser }) {
         ),
         h("div", { class: "card" },
           h("h3", { class: "card-title" }, "خروجی گرفتن"),
-          h("button", { type: "button", class: "btn btn-success", onclick: () => exportAs("xlsx") }, "📗 گزارش Excel"),
-          h("button", { type: "button", class: "btn btn-danger", onclick: () => exportAs("pdf") }, "📕 گزارش PDF"),
-          h("button", { type: "button", class: "btn btn-primary", onclick: () => exportAs("zip") }, "🗂 ZIP کامل (عکس‌ها + Excel + PDF)"),
+          h("div", { class: "tiles" },
+            tile("xlsx", ICONS.sheet, "Excel", "گزارش جدولی"),
+            tile("pdf", ICONS.pdf, "PDF", "گزارش چاپی"),
+            tile("zip", ICONS.zip, "ZIP کامل", "عکس‌ها و گزارش‌ها")),
           h("div", { class: "info-text" }, "فایل‌ها در پوشه دانلود گوشی ذخیره می‌شوند. ZIP هنگام باز شدن یک پوشه مرتب با عکس‌هایی به نام شماره اشتراک می‌سازد."),
           shareBtn
         )

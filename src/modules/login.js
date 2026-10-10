@@ -32,7 +32,8 @@ export function showLogin(host) {
         h("label", { for: "loginPass" }, "رمز عبور"), pass,
         err, btn,
         h("p", { class: "info-text center" }, "رمز را از مسئول دریافت کنید. ورود بدون اینترنت هم کار می‌کند.")
-      )
+      ),
+      h("div", { class: "login-credit" }, "تهیه کننده: مجید امیری زاده ، کارشناس مسئول سیستمهای مشترکین")
     );
     host.append(el);
     code.focus();
