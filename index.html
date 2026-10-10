@@ -12,20 +12,27 @@
   <link rel="icon" href="assets/icons/icon-192.png">
   <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
   <link rel="preload" href="assets/fonts/Vazirmatn-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/Vazirmatn-Bold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="src/styles/app.css">
 </head>
 <body>
   <div id="app" hidden>
     <header class="app-header">
-      <div class="hdr-side"></div>
-      <div class="hdr-title" id="appTitle"></div>
+      <!-- گوشهٔ راست: وضعیت اینترنت (چراغ سبز = آنلاین ، چراغ قرمز = آفلاین) -->
+      <div class="hdr-side hdr-net online" id="netStatus" role="status" aria-live="polite">
+        <span class="net-lamp" aria-hidden="true"></span>
+        <span class="net-lbl">آنلاین</span>
+      </div>
+      <div class="hdr-title">
+        <img class="hdr-logo" src="assets/icons/icon-192.png" alt="" width="28" height="28">
+        <span id="appTitle"></span>
+      </div>
       <div class="hdr-side hdr-menu-wrap">
-        <button type="button" class="hdr-btn hdr-burger" id="menuBtn" aria-label="منو" aria-haspopup="true" aria-expanded="false">☰</button>
+        <button type="button" class="hdr-btn hdr-burger" id="menuBtn" aria-label="منو" aria-haspopup="true" aria-expanded="false"></button>
         <div class="hdr-menu hidden" id="menuPanel" role="menu"></div>
       </div>
     </header>
     <div class="menu-backdrop hidden" id="menuBackdrop"></div>
-    <div class="status" id="netStatus">در حال بررسی اتصال…</div>
     <main class="container" id="view"></main>
     <nav class="bottom-nav" id="nav" aria-label="بخش‌ها"></nav>
   </div>
