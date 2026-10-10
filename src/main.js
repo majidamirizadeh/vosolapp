@@ -8,6 +8,7 @@ import { loadPrefs, getPref } from "./core/prefs.js";
 import { createRouter } from "./core/router.js";
 import { toast, alertBox, confirmBox } from "./core/ui.js";
 import { h } from "./core/utils.js";
+import { ICONS } from "./core/icons.js";
 import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./modules/auth.js";
 import { showLogin } from "./modules/login.js";
 import { migrateLegacy, listFor } from "./modules/records.js";
@@ -141,8 +142,11 @@ function setupNetwork() {
   const el = document.getElementById("netStatus");
   const update = () => {
     const on = navigator.onLine;
-    el.textContent = on ? "آنلاین" : "آفلاین — اطلاعات فقط روی گوشی ذخیره می‌شوند";
-    el.className = "status " + (on ? "online" : "offline");
+    // چراغ گوشهٔ راست هدر: سبز + «آنلاین» / قرمز + «آفلاین»
+    el.classList.toggle("online", on);
+    el.classList.toggle("offline", !on);
+    el.querySelector(".net-lbl").textContent = on ? "آنلاین" : "آفلاین";
+    el.title = on ? "آنلاین" : "آفلاین — اطلاعات فقط روی گوشی ذخیره می‌شوند";
     bus.emit(EV.NET, on);
   };
   window.addEventListener("online", async () => {
@@ -172,12 +176,13 @@ function setupMenu({ router, userLabel, doLogout }) {
   };
   const item = (icon, label, run, cls = "") =>
     h("button", { type: "button", class: "hdr-menu-item " + cls, role: "menuitem", onclick: () => { close(); run(); } },
-      h("span", {}, icon), h("span", {}, label));
+      h("span", { class: "mi", html: icon }), h("span", {}, label));
+  btn.innerHTML = ICONS.menu;
   panel.append(
-    h("div", { class: "hdr-menu-user" }, "👤 ", userLabel),
-    item("⚙️", "تنظیمات", () => router.show("settings")),
-    item("⬇️", "دانلودها", () => router.show("downloads")),
-    item("🚪", "خروج از حساب", doLogout, "danger")
+    h("div", { class: "hdr-menu-user" }, h("span", { class: "mu-av", html: ICONS.user }), h("span", { class: "mu-name" }, userLabel)),
+    item(ICONS.settings, "تنظیمات", () => router.show("settings")),
+    item(ICONS.downloads, "دانلودها", () => router.show("downloads")),
+    item(ICONS.logout, "خروج از حساب", doLogout, "danger")
   );
   btn.addEventListener("click", () => {
     const open = panel.classList.contains("hidden");
