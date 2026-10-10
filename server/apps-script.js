@@ -19,6 +19,7 @@
  *  ✔ getPhotos         چند عکس (با شناسه فایل) به‌صورت base64 — گوشی ادمین ZIP + Excel را خودش می‌سازد و دانلود می‌کند
  *  ✔ این اکشن‌ها علاوه بر APP_TOKEN، «ADMIN_KEY» هم می‌خواهند (باید با رمز ورود ادمین یکی باشد)
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
+ *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
  */
 
 // ============ تنظیمات (حتماً تغییر دهید) ============
@@ -41,10 +42,11 @@ const SETTINGS = {
 
 const HEADERS = [
   "زمان ثبت سرور", "شناسه یکتا (uid)", "کد کاربر", "نام کاربر", "نوع عملیات", "تاریخ شمسی",
-  "امور", "شهر", "سرگروه", "شماره اشتراک", "مبلغ", "تعداد عکس", "نام فایل عکس‌ها",
+  "امور", "شهر/بخش", "سرگروه", "شماره اشتراک", "مبلغ", "تعداد عکس", "نام فایل عکس‌ها",
   "عرض جغرافیایی", "طول جغرافیایی", "دقت GPS (متر)", "زمان ثبت در گوشی",
   "لینک عکس ۱", "لینک عکس ۲", "لینک عکس ۳", "لینک عکس ۴",
   "توضیحات", // ستون ۲۲ (انتهای جدول تا ستون‌های قبلی جابه‌جا نشوند)
+  "آبادی",   // ستون ۲۳
 ];
 const UID_COL = 2;
 const USERCODE_COL = 3;
@@ -151,6 +153,7 @@ function buildRow_(data, links) {
     data.gpsAccuracy == null ? "" : data.gpsAccuracy, data.createdAt || "",
     links[0] || "", links[1] || "", links[2] || "", links[3] || "",
     String(data.note || "").slice(0, 500),
+    String(data.abadi || "").slice(0, 200),
   ];
 }
 
@@ -196,10 +199,14 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold").setBackground("#0d6efd").setFontColor("white");
     sheet.setFrozenRows(1);
     sheet.setRightToLeft(true);
-  } else if (!sheet.getRange(1, HEADERS.length).getValue()) {
-    // شیت قدیمی (۲۱ ستون): سرستون «توضیحات» را به انتها اضافه کن
-    sheet.getRange(1, HEADERS.length).setValue(HEADERS[HEADERS.length - 1])
-      .setFontWeight("bold").setBackground("#0d6efd").setFontColor("white");
+  } else {
+    // شیت قدیمی: سرستون‌های جدید («توضیحات» و «آبادی») را در صورت نبودن به انتها اضافه کن
+    for (let c = 22; c <= HEADERS.length; c++) {
+      if (!sheet.getRange(1, c).getValue()) {
+        sheet.getRange(1, c).setValue(HEADERS[c - 1])
+          .setFontWeight("bold").setBackground("#0d6efd").setFontColor("white");
+      }
+    }
   }
   return sheet;
 }
@@ -342,6 +349,7 @@ function rowToRecord_(row) {
     createdAt: String(row[16] || ""),
     photoLinks: links,
     note: String(row[21] || ""),
+    abadi: String(row[22] || ""),
   };
 }
 
