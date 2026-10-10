@@ -11,15 +11,19 @@
  *   select  لیست انتخابی (گزینه‌ها در options؛ فهرست امور از config/omoors.js)
  */
 import { OMOORS } from "./omoors.js";
+import { CITIES } from "./cities.js";
 
 export const FIELDS = [
   { key: "date",     label: "تاریخ شمسی", type: "shamsi", required: true, hint: "خودکار پر می‌شود — قابل ویرایش" },
   { key: "omoor",    label: "امور",       type: "select", required: true, sticky: true, options: OMOORS },
-  { key: "city",     label: "شهر",        type: "text",   required: true, sticky: true },
+  // «شهر/بخش»: فهرست آن به امور انتخاب‌شده بستگی دارد (از config/cities.js)
+  { key: "city",     label: "شهر/بخش",    type: "select", required: true, sticky: true, dependsOn: "omoor", optionsMap: CITIES },
+  // «آبادی»: دستی پر می‌شود؛ فقط وقتی «شهر/بخش» با «بخش» شروع شود فعال است
+  { key: "abadi",    label: "آبادی",      type: "text",   required: false },
   { key: "leader",   label: "سرگروه",     type: "text",   required: true, sticky: true },
   { key: "eshterak", label: "شماره اشتراک", type: "digits", required: true, hint: "نام فایل عکس‌ها از همین شماره ساخته می‌شود" },
   { key: "amount",   label: "مبلغ",       type: "money",  required: true, labelByMode: true },
-  // توضیحات اختیاری برای هر ۴ عملیات (wide = تمام‌عرض در چیدمان دو ستونی)
+  // توضیحات اختیاری برای همه عملیات‌ها (wide = تمام‌عرض در چیدمان دو ستونی)
   { key: "note",     label: "توضیحات",    type: "textarea", required: false, wide: true, placeholder: "اختیاری" },
 ];
 
@@ -46,6 +50,18 @@ export const MODES = {
     title: "قطع از محل کمربند",
     amountLabel: "مبلغ بدهی (ریال)",
     photoSlots: ["عکس قبل", "عکس حین", "عکس بعد", "عکس اضافی"],
+    minPhotos: 1,
+  },
+  unseal: {
+    title: "فک پلمپ",
+    amountLabel: "مبلغ بدهی (ریال)",
+    photoSlots: ["عکس قبل", "عکس بعد"],
+    minPhotos: 1,
+  },
+  block_account: {
+    title: "مسدودی حساب",
+    amountLabel: "مبلغ بدهی (ریال)",
+    photoSlots: ["عکس ۱", "عکس ۲"],
     minPhotos: 1,
   },
 };

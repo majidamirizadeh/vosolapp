@@ -37,6 +37,7 @@ export const CONFIG = {
       ["date"],
       ["omoor"],
       ["city"],
+      ["abadi"],
       ["leader"],
       ["amount"],
       ["userName"],
