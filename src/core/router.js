@@ -17,7 +17,7 @@ export function createRouter(modules, navEl, viewEl) {
     if (m.nav === false) continue; // فقط از منوی همبرگری باز می‌شود
     const badge = h("span", { class: "nav-badge hidden" });
     const btn = h("button", { type: "button", class: "nav-btn", "data-tab": m.id, onclick: () => show(m.id) },
-      h("span", { class: "nav-ico" }, m.icon), h("span", { class: "nav-lbl" }, m.title), badge);
+      h("span", { class: "nav-ico", html: m.icon }), h("span", { class: "nav-lbl" }, m.title), badge);
     btn._badge = badge;
     buttons.set(m.id, btn);
     navEl.append(btn);
@@ -52,6 +52,7 @@ export function createRouter(modules, navEl, viewEl) {
     await modules.find((m) => m.id === id).onShow?.();
     refreshBadges();
     window.scrollTo(0, 0);
+    viewEl.scrollTop = 0; // محتوا داخل کادر وسط اسکرول می‌شود
   }
 
   bus.on(EV.RECORDS_CHANGED, refreshBadges);
