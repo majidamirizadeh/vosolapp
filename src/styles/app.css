@@ -205,7 +205,7 @@ input:disabled, select:disabled { background: #f0f3f8; color: #9aa6b9; cursor: n
 .btn-xs.btn-success, .btn-xs.btn-warning, .btn-xs.btn-danger, .btn-xs.btn-primary { box-shadow: 0 4px 10px -4px rgba(14, 27, 51, .35), inset 0 1px 0 rgba(255, 255, 255, .25); }
 .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
 .btn-group .btn { margin-top: 0; }
-.btn-group .btn:first-child { grid-column: 1 / -1; }
+.btn-group .btn:first-child, .btn-group .btn-warning { grid-column: 1 / -1; }   /* دکمهٔ زردِ ZIP عکس‌ها: عرض دو دکمهٔ بالا */
 
 /* ═══════════════════════════════════════════════════════════════════
  *  تب «فرم جدید» — یک صفحهٔ فشرده بدون اسکرول
