@@ -4,7 +4,7 @@
 import { CONFIG } from "../config/app.config.js";
 import { openDB } from "./core/db.js";
 import { bus, EV } from "./core/bus.js";
-import { loadPrefs, getPref } from "./core/prefs.js";
+import { loadPrefs, getPref, setPrefsLocked } from "./core/prefs.js";
 import { createRouter } from "./core/router.js";
 import { toast, alertBox, confirmBox } from "./core/ui.js";
 import { h } from "./core/utils.js";
@@ -12,7 +12,8 @@ import { ICONS } from "./core/icons.js";
 import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./modules/auth.js";
 import { showLogin } from "./modules/login.js";
 import { migrateLegacy, listFor } from "./modules/records.js";
-import { loadHandle, requestPersistence } from "./modules/storage.js";
+import { loadHandle, requestPersistence, status as folderStatus, folderApiSupported } from "./modules/storage.js";
+import { showWelcome } from "./modules/welcome.js";
 import { ensureFonts } from "./modules/photos.js";
 import { sendMany, serverConfigured } from "./modules/sync.js";
 import { createFormModule } from "./modules/form.js";
@@ -244,9 +245,16 @@ async function start() {
   setupNetwork();
 
   user = currentUser();
+  const justLoggedIn = !user;
   if (!user) user = await showLogin(document.body);
+  setPrefsLocked(!isAdmin(user)); // ذخیرهٔ خودکار عکس و ارسال خودکار: برای غیرادمین قفل (روشن)
   const userLabel = user.name + (isTestUser(user) ? " (تست)" : isAdmin(user) ? " (ادمین)" : "");
   requestPersistence();
+
+  // صفحهٔ خوش‌آمدگویی: بعد از هر ورود؛ و تا وقتی پوشهٔ ذخیره‌سازی انتخاب نشده، در هر بار باز شدن برنامه
+  const fst = await folderStatus();
+  const needFolder = folderApiSupported() && fst.mode !== "folder";
+  if (justLoggedIn || needFolder) await showWelcome(document.body, { userLabel });
 
   const doLogout = async () => {
     if (await confirmBox("از حساب خارج می‌شوید؟\n(اطلاعات ذخیره‌شده روی گوشی پاک نمی‌شود)", { yes: "خروج" })) {
