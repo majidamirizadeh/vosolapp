@@ -16,6 +16,7 @@ import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
 import { splitTotals } from "./records.js";
 import { ICONS } from "../core/icons.js";
+import { getCached, putCached, clearCache, cacheCount } from "./photocache.js";
 
 /** کلیدهای مرتب‌سازی — پیش‌فرض: امور */
 const SORT_KEYS = [
@@ -67,20 +68,84 @@ export function createAdminModule({ getUser }) {
     return p;
   }
 
-  const fail = (res) => alertBox(res?.error || "خطای نامشخص", "خطا از سرور");
+  /** خطای سرور/شبکه → علت و راه‌حل به فارسی ساده (متن فنی در انتها) */
+  function explain(res) {
+    const raw = String(res?.error || "خطای نامشخص");
+    let why = "سرور پاسخ درستی نداد.", tip = "کمی بعد دوباره تلاش کنید.";
+    if (/آفلاین/.test(raw)) { why = "اینترنت دستگاه قطع است."; tip = "اتصال اینترنت (Wi-Fi یا داده) را بررسی و دوباره تلاش کنید."; }
+    else if (/رمز ادمین/.test(raw)) { why = "رمز ادمین واردشده با رمز سرور یکی نیست."; tip = "رمز را همان رمز ورود ادمین وارد کنید (ADMIN_KEY در اسکریپت سرور هم باید همان باشد)."; }
+    else if (/ADMIN_KEY/.test(raw)) { why = "رمز ادمین در اسکریپت سرور تنظیم نشده است."; tip = "ADMIN_KEY را در server/apps-script.js بگذارید و اسکریپت را دوباره Deploy کنید."; }
+    else if (/توکن/.test(raw)) { why = "توکن برنامه با توکن سرور یکی نیست."; tip = "مقدار token در config/app.config.js و APP_TOKEN در اسکریپت سرور باید یکسان باشد."; }
+    else if (/timeout|دیر شد/.test(raw)) { why = "سرور در زمان مجاز پاسخ نداد (اینترنت ضعیف یا حجم زیاد)."; tip = "اینترنت را بررسی کنید و بازه/فیلتر را کوچک‌تر کنید."; }
+    else if (/عدم ارتباط|Failed to fetch|NetworkError/i.test(raw)) { why = "ارتباط با سرور برقرار نشد."; tip = "اینترنت را بررسی کنید؛ اگر اینترنت سالم است آدرس سرور (url در config/app.config.js) یا Deploy اسکریپت را کنترل کنید."; }
+    else if (/پاسخ نامعتبر/.test(raw)) { why = "سرور پاسخ غیرمنتظره داد (احتمالاً Deploy نسخهٔ جدید انجام نشده یا دسترسی «Anyone» نیست)."; tip = "اسکریپت را با دسترسی Anyone دوباره Deploy کنید."; }
+    return { why, tip, raw };
+  }
+
+  /** نمایش خطا؛ قبل از آن پیام «در حال دریافت» حتماً بسته می‌شود تا روی هم نیفتند */
+  async function failStage(j, stage, res) {
+    j?.done();
+    const x = explain(res);
+    await alertBox(`مرحلهٔ «${stage}» انجام نشد.\n\nعلت: ${x.why}\nراه‌حل: ${x.tip}\n\nجزئیات فنی: ${x.raw}`, "خطا — " + stage);
+  }
+  const fail = (res, stage = "ارتباط با سرور") => failStage(null, stage, res);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const fa = (ms) => toPersianDigits((ms / 1000).toFixed(1)).replace(".", "٫");
+
+  /** یک پیام «در حال انجام» واحد برای کل عملیات: مرحله n از N + شرح + زمان سپری‌شده؛ و زمان‌سنجی هر مرحله */
+  function makeJob(total, prev) {
+    const b = busy("در حال آماده‌سازی…");
+    let n = 0, label = "", t0 = Date.now(), tm = Date.now(), srvMs = prev ? prev.srvMs() : 0;
+    const t00 = prev ? prev.t00 : Date.now(), marks = prev ? [...prev.marks] : []; // prev: ادامهٔ همان عملیات بعد از یک پرسش
+    const show = () => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      b.text(`مرحلهٔ ${toPersianDigits(n)} از ${toPersianDigits(total)}\n${label}` + (s >= 4 ? `\n(${toPersianDigits(s)} ثانیه)` : ""));
+    };
+    const timer = setInterval(show, 1000);
+    return {
+      step(i, text) { n = i; label = text; t0 = Date.now(); show(); },
+      detail(text) { label = text; show(); },
+      progress: b.progress,
+      /** ثبت زمان مرحله‌ای که تمام شد (نام فارسی کوتاه) */
+      mark(name) { marks.push([name, Date.now() - tm]); tm = Date.now(); },
+      t00, marks, srvMs: () => srvMs,
+      /** جمع زمان اجرای خود سرور (فیلد ms پاسخ‌ها) */
+      srv(res) { if (res && Number.isFinite(res.ms)) srvMs += res.ms; },
+      /** «زمان کل … | مرحله‌ها … | سرور …» برای نمایش زیر دکمه‌ها */
+      summary() {
+        const parts = marks.filter((m) => m[1] >= 100).map((m) => `${m[0]} ${fa(m[1])}`).join(" · ");
+        return `زمان کل ${fa(Date.now() - t00)} ثانیه` + (parts ? ` — ${parts}` : "") + (srvMs ? ` — اجرای سرور ${fa(srvMs)}` : "");
+      },
+      done() { clearInterval(timer); b.done(); },
+    };
+  }
   const currentSort = () => (f.sort && f.sort.value) || "omoor";
 
+  let combinedOk = true; // سرور جدید جمع‌ها را در همان پاسخ listRecords می‌دهد؛ سرور قدیمی نه
   async function fetchReport() {
     const p = readFilters();
     if (!p) return null;
-    const b = busy("در حال دریافت گزارش از سرور…");
-    const [list, sum] = await Promise.all([serverCall("listRecords", p), serverCall("getSummary", p)]);
-    b.done();
-    if (!list.ok) { await fail(list); return null; }
+    cache = null; // دکمهٔ «دریافت گزارش» = تازه‌سازی صریح
+    const j = makeJob(1);
+    j.step(1, "دریافت گزارش از سرور…");
+    let list, sum;
+    if (combinedOk) {
+      list = await serverCall("listRecords", { ...p, withSummary: true });
+      j.srv(list);
+      if (list.ok && list.summary) sum = list.summary;
+      else if (list.ok) { combinedOk = false; sum = await serverCall("getSummary", p); }
+    } else {
+      [list, sum] = await Promise.all([serverCall("listRecords", p), serverCall("getSummary", p)]);
+    }
+    if (!list.ok) { await failStage(j, "دریافت گزارش از سرور", list); return null; }
+    j.mark("دریافت");
+    j.done();
     lastRecords = list.records || [];
     lastFilters = p;
-    lastSum = sum.ok ? sum : null;
+    lastSum = sum && sum.ok ? sum : null;
     render(list, lastSum);
+    links.replaceChildren(h("p", { class: "info-text" }, j.summary()));
     return lastRecords;
   }
 
@@ -132,13 +197,30 @@ export function createAdminModule({ getUser }) {
     );
   }
 
-  /** همه ردیف‌های فیلتر فعلی — برای Excel و ZIP و PDF */
-  async function fetchAll() {
+  /** فهرست کامل اخیر (۲ دقیقه) — تا Excel و PDF و ZIP پشت‌سرهم هر بار از سرور نخوانند */
+  const CACHE_MS = 120_000;
+  let cache = null;
+
+  /** همه ردیف‌های فیلتر فعلی — برای Excel و ZIP و PDF (needLinks=false: بدون لینک عکس‌ها = سبک‌تر) */
+  async function fetchAll(j, step, needLinks) {
     const p = readFilters();
     if (!p) return null;
-    const res = await serverCall("listRecords", { ...p, limit: 20000 });
-    if (!res.ok) { await fail(res); return null; }
+    const key = JSON.stringify(p);
+    let res;
+    if (cache && cache.key === key && Date.now() - cache.t < CACHE_MS && (cache.links || !needLinks)) {
+      res = cache.res;
+      j.step(step, `استفاده از فهرست دریافت‌شده (${toPersianDigits(Math.round((Date.now() - cache.t) / 1000))} ثانیه پیش)…`);
+      j.mark("فهرست (از حافظه)");
+    } else {
+      j.step(step, "دریافت فهرست رکوردها از سرور…");
+      res = await serverCall("listRecords", { ...p, limit: 20000, ...(needLinks ? {} : { noLinks: true }) });
+      j.srv(res);
+      if (!res.ok) { await failStage(j, "دریافت فهرست از سرور", res); return null; }
+      j.mark("فهرست");
+      cache = { key, t: Date.now(), links: !!needLinks, res };
+    }
     if (res.truncated) toast(`فقط ${toPersianDigits((res.records || []).length)} مورد اول از ${toPersianDigits(res.total)} مورد گرفته شد؛ بازه را محدودتر کنید`, "error");
+    j.detail(`${toPersianDigits((res.records || []).length)} رکورد؛ در حال مرتب‌سازی…`);
     return { recs: sortRecords(res.records || [], currentSort()), filters: p };
   }
 
@@ -155,18 +237,20 @@ export function createAdminModule({ getUser }) {
         { header: "شهر/بخش", width: 16 }, { header: "آبادی", width: 16 }, { header: "سرگروه", width: 18 }, { header: "شماره اشتراک", width: 15 },
         { header: "مبلغ (ریال)", width: 16, type: "number" }, { header: "تعداد عکس", width: 10, type: "number" },
         { header: "نام فایل عکس‌ها", width: 34 }, { header: "عرض جغرافیایی", width: 14 }, { header: "طول جغرافیایی", width: 14 },
-        { header: "زمان ثبت", width: 20 }, { header: "توضیحات", width: 30 }, { header: "لینک عکس‌ها", width: 60 },
+        { header: "زمان ثبت", width: 20 }, { header: "توضیحات", width: 30 },
       ],
       rows: recs.map((r, i) => [
         i + 1, r.date, r.userCode, r.userName, r.modeTitle, r.omoor, r.city, r.abadi || "", r.leader, r.eshterak,
         Number(r.amount) || 0, Number(r.photoCount) || 0, r.photoNames, r.gpsLat ?? "", r.gpsLng ?? "",
-        r.serverTime, r.note || "", (r.photoLinks || []).join("  "),
+        r.serverTime, r.note || "",
       ]),
     }]);
   }
 
   /* ─── PDF ادمین (Canvas + همان موتور pdf.js) ─── */
   const PW = 1754, PH = 1240;
+  const PDF_QUALITY = 0.78; // متن روی زمینهٔ سفید با این کیفیت خوانا می‌ماند و فایل و زمان ساخت کمتر می‌شود
+  const PDF_WARN_ROWS = 1500;
   const FONT = `Vazirmatn, Tahoma, sans-serif`;
   function fit(ctx, text, maxW) {
     text = String(text ?? "");
@@ -175,7 +259,7 @@ export function createAdminModule({ getUser }) {
     return text + "…";
   }
 
-  async function buildAdminPdf(recs, filters) {
+  async function buildAdminPdf(recs, filters, onPage) {
     await ensureFonts();
     const list = recs;
     const tot = splitTotals(list); // هر اشتراک در هر جمع فقط یک مبلغ
@@ -320,52 +404,91 @@ export function createAdminModule({ getUser }) {
       ctx.textAlign = "center";
       ctx.fillText(toPersianDigits(`صفحه ${p + 1} از ${pagesRows.length}`), PW / 2, PH - 36);
 
-      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.88));
+      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", PDF_QUALITY));
       pages.push({ jpeg: new Uint8Array(await blob.arrayBuffer()), width: PW, height: PH });
+      if (onPage) { onPage(p + 1, pagesRows.length); await sleep(0); } // فرصت به‌روزرسانی صفحه
     }
     return createPdfFromJpegs(pages, { title: "AdminReport" });
   }
 
+  const outName = (ext) => `گزارش-سرور_${todayJalali().replace(/\//g, "-")}.${ext}`;
+  const showSummary = (j, extra = "") => links.replaceChildren(h("p", { class: "info-text" }, (extra ? extra + " — " : "") + j.summary()));
+
+  /** خطای غیرشبکه‌ای (ساخت فایل / ذخیره) با نام مرحله */
+  async function failBuild(j, stage, e) {
+    console.error(e);
+    j?.done();
+    await alertBox(`مرحلهٔ «${stage}» انجام نشد.\n\nعلت: خطا در پردازش روی همین دستگاه (نه سرور).\nراه‌حل: دوباره تلاش کنید؛ اگر تکرار شد بازه را کوچک‌تر کنید یا برنامه را ببندید و باز کنید.\n\nجزئیات فنی: ${e?.message || e}`, "خطا — " + stage);
+  }
+
   async function exportExcel() {
-    const b = busy("در حال دریافت اطلاعات و ساخت Excel…");
+    if (!readFilters()) return;
+    links.replaceChildren();
+    const j = makeJob(3);
+    let stage = "دریافت فهرست از سرور";
     try {
-      const got = await fetchAll();
+      const got = await fetchAll(j, 1, false);
       if (!got) return;
-      if (!got.recs.length) return toast("موردی برای خروجی نیست", "error");
+      if (!got.recs.length) { j.done(); return toast("برای این فیلترها موردی در سرور نیست", "error"); }
+      stage = "ساخت فایل Excel";
+      j.step(2, `ساخت فایل Excel (${toPersianDigits(got.recs.length)} ردیف)…`);
+      await sleep(0);
       const blob = await buildAdminXlsx(got.recs, got.filters);
-      downloadBlob(blob, `گزارش-سرور_${todayJalali().replace(/\//g, "-")}.xlsx`);
-      toast("فایل Excel ذخیره شد", "success");
-    } catch (e) {
-      console.error(e);
-      toast("ساخت Excel ناموفق بود: " + (e.message || e), "error");
-    } finally { b.done(); }
+      j.mark("ساخت Excel");
+      stage = "ذخیره فایل";
+      j.step(3, "ذخیرهٔ فایل روی دستگاه…");
+      downloadBlob(blob, outName("xlsx"));
+      j.done();
+      showSummary(j);
+      toast(`فایل Excel ذخیره شد (${toPersianDigits(got.recs.length)} ردیف)`, "success");
+    } catch (e) { await failBuild(j, stage, e); } finally { j.done(); }
   }
 
   async function exportPdf() {
-    const b = busy("در حال دریافت اطلاعات و ساخت PDF…");
+    if (!readFilters()) return;
+    links.replaceChildren();
+    let j = makeJob(3);
+    let stage = "دریافت فهرست از سرور";
     try {
-      const got = await fetchAll();
+      const got = await fetchAll(j, 1, false);
       if (!got) return;
-      if (!got.recs.length) return toast("موردی برای خروجی نیست", "error");
-      const blob = await buildAdminPdf(got.recs, got.filters);
-      downloadBlob(blob, `گزارش-سرور_${todayJalali().replace(/\//g, "-")}.pdf`);
-      toast("فایل PDF ذخیره شد", "success");
-    } catch (e) {
-      console.error(e);
-      toast("ساخت PDF ناموفق بود: " + (e.message || e), "error");
-    } finally { b.done(); }
+      if (!got.recs.length) { j.done(); return toast("برای این فیلترها موردی در سرور نیست", "error"); }
+      if (got.recs.length > PDF_WARN_ROWS) {
+        const prevJob = j;
+        j.done();
+        const pages = Math.ceil(got.recs.length / 23);
+        if (!(await confirmBox(`این گزارش ${toPersianDigits(got.recs.length)} ردیف است؛ PDF حدود ${toPersianDigits(pages)} صفحه می‌شود و ساخت آن چند دقیقه طول می‌کشد و فایل حجیم است.\n\nبرای تعداد زیاد، خروجی Excel خیلی سریع‌تر است. PDF ساخته شود؟`, { yes: "ساخت PDF", no: "انصراف", title: "گزارش حجیم" }))) return;
+        j = makeJob(3, prevJob);
+      }
+      stage = "ساخت صفحه‌های PDF";
+      j.step(2, "آماده‌سازی فونت و صفحه‌ها…");
+      const blob = await buildAdminPdf(got.recs, got.filters, (i, n) => { j.detail(`ساخت صفحهٔ ${toPersianDigits(i)} از ${toPersianDigits(n)}…`); j.progress(i / n); });
+      j.mark("ساخت صفحه‌ها");
+      stage = "ذخیره فایل";
+      j.step(3, "ذخیرهٔ فایل روی دستگاه…");
+      downloadBlob(blob, outName("pdf"));
+      j.done();
+      showSummary(j);
+      toast(`فایل PDF ذخیره شد (${toPersianDigits(got.recs.length)} ردیف)`, "success");
+    } catch (e) { await failBuild(j, stage, e); } finally { j.done(); }
   }
 
-  const b64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  /** base64 → بایت (با روش بومی مرورگر در صورت وجود؛ وگرنه حلقهٔ سریع) */
+  const b64ToBytes = (b64) => {
+    if (typeof Uint8Array.fromBase64 === "function") { try { return Uint8Array.fromBase64(b64); } catch { /* ادامه */ } }
+    const bin = atob(b64), n = bin.length, out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  };
   const cleanSeg = (x) => String(x || "نامشخص").replace(/[\\/:*?"<>|]/g, "-").trim() || "نامشخص";
   const driveId = (u) => (String(u).match(/[-\w]{25,}/) || [""])[0];
-  const MAX_ZIP_PHOTOS = 600;
-  const BATCH = 6; // باید ≤ PHOTOS_PER_CALL در اسکریپت سرور باشد
-
-  /** ZIP کامل: فایل Excel + عکس‌ها (پوشه‌بندی امور / تاریخ / اکیپ) → مستقیم روی گوشی دانلود می‌شود */
-  const ZIP_MAX_DAYS = 10;
+  const MAX_ZIP_PHOTOS = 1500;   // سقف کل عکس‌ها در یک دانلود (بیشتر از PART_SIZE در چند فایل ZIP)
+  const PART_SIZE = 300;         // حداکثر عکس در هر فایل ZIP
+  const OLD_BATCH = 6;           // سرور قدیمی (بدون signPhotos): ≤ PHOTOS_PER_CALL قدیمی
+  const MAX_BATCH = 20;
 
   /** شرایط دانلود ZIP عکس‌ها: حداقل یک فیلتر (امور / تاریخ / اکیپ)، امور فقط یکی، تاریخ حداکثر ۱۰ روز */
+  const ZIP_MAX_DAYS = 10;
   function zipGate() {
     const p = readFilters();
     if (!p) return null;
@@ -393,20 +516,50 @@ export function createAdminModule({ getUser }) {
     return { p, lines };
   }
 
+  const PHOTO_WORKERS = 3; // تعداد درخواست هم‌زمان عکس
+  const FATAL = /آفلاین|رمز ادمین|ADMIN_KEY|توکن/;
+
+  /**
+   * یک دسته عکس با تلاش مجدد؛ اگر دسته بزرگ دوبار شکست خورد (مثلاً timeout) به دو نیم تقسیم و دوباره تلاش می‌شود.
+   * files: [{id, sig?}] — با sig = روش جدید (بدون خواندن شیت) ؛ بدون sig = روش قدیمی (fileIds)
+   */
+  async function getBatch(j, filters, files, signed, depth = 0) {
+    let res;
+    for (let a = 0; a < 2; a++) {
+      const body = signed ? { files } : { fileIds: files.map((x) => x.id) };
+      res = await serverCall("getPhotos", { ...pick(filters), ...body });
+      if (res.ok) { j.srv(res); return res; }
+      if (FATAL.test(String(res.error))) return res;
+      await sleep(900 * (a + 1));
+    }
+    if (files.length > 3 && depth < 1) {
+      const mid = Math.ceil(files.length / 2);
+      const [x, y] = [await getBatch(j, filters, files.slice(0, mid), signed, depth + 1), await getBatch(j, filters, files.slice(mid), signed, depth + 1)];
+      if (x.ok || y.ok) {
+        const lost = (r, part) => (r.ok ? [] : part.map((q) => q.id));
+        return { ok: true, photos: [...(x.photos || []), ...(y.photos || [])], missing: [...(x.missing || []), ...(y.missing || []), ...lost(x, files.slice(0, mid)), ...lost(y, files.slice(mid))], fast: (x.fast || 0) + (y.fast || 0), error: x.ok ? y.error : x.error };
+      }
+      return x;
+    }
+    return res;
+  }
+
   async function photosZip() {
     links.replaceChildren();
     const gate = zipGate();
     if (!gate) return;
     const ok = await confirmBox(
-      `محدودیت‌های دانلود عکس‌ها:\n• حداقل یک فیلتر (امور / تاریخ / اکیپ) لازم است\n• امور: فقط یک امور\n• تاریخ: حداکثر ${toPersianDigits(ZIP_MAX_DAYS)} روز\n• حداکثر ${toPersianDigits(MAX_ZIP_PHOTOS)} عکس در هر ZIP\n\nفیلتر انتخاب‌شده شما:\n${gate.lines.join("\n")}\n\nشروع شود؟`,
+      `محدودیت‌های دانلود عکس‌ها:\n• حداقل یک فیلتر (امور / تاریخ / اکیپ) لازم است\n• امور: فقط یک امور\n• تاریخ: حداکثر ${toPersianDigits(ZIP_MAX_DAYS)} روز\n• حداکثر ${toPersianDigits(MAX_ZIP_PHOTOS)} عکس (هر ${toPersianDigits(PART_SIZE)} عکس یک فایل ZIP)\n\nفیلتر انتخاب‌شده شما:\n${gate.lines.join("\n")}\n\nشروع شود؟`,
       { yes: "شروع دانلود", title: "دانلود عکس‌های زیپ‌شده" });
     if (!ok) return;
-    const b = busy("در حال دریافت فهرست از سرور…");
+    const TOTAL = 5;
+    let j = makeJob(TOTAL);
+    let stage = "دریافت فهرست از سرور";
     try {
-      const got = await fetchAll();
+      const got = await fetchAll(j, 1, true);
       if (!got) return;
       const { recs, filters } = got;
-      if (!recs.length) return toast("برای این فیلترها موردی نیست", "error");
+      if (!recs.length) { j.done(); return toast("برای این فیلترها موردی در سرور نیست", "error"); }
 
       const root = `گزارش-سرور_${todayJalali().replace(/\//g, "-")}`;
       const items = [];
@@ -417,44 +570,152 @@ export function createAdminModule({ getUser }) {
           if (id) items.push({ id, path: `${root}/عکس‌ها/${cleanSeg(r.omoor)}/${cleanSeg(r.date).replace(/\//g, "-")}/${cleanSeg(r.userCode)}/${cleanSeg(names[i] || `${r.eshterak}_${i + 1}.jpg`)}` });
         });
       }
+      if (!items.length) { j.done(); return alertBox("برای این فیلترها رکورد پیدا شد اما هیچ عکسی ثبت نشده است.", "عکسی وجود ندارد"); }
       if (items.length > MAX_ZIP_PHOTOS) {
-        return alertBox(`${toPersianDigits(items.length)} عکس پیدا شد؛ سقف هر ZIP ${toPersianDigits(MAX_ZIP_PHOTOS)} عکس است.\nبازه تاریخ یا امور را محدودتر کنید.`, "تعداد عکس زیاد است");
+        j.done();
+        return alertBox(`${toPersianDigits(items.length)} عکس پیدا شد؛ سقف هر دانلود ${toPersianDigits(MAX_ZIP_PHOTOS)} عکس است.\nبازه تاریخ یا امور را محدودتر کنید.`, "تعداد عکس زیاد است");
       }
-      if (items.length > 80) {
-        b.done();
-        const mb = Math.round(items.length * 0.3);
-        if (!(await confirmBox(`${toPersianDigits(items.length)} عکس (حدود ${toPersianDigits(mb)} مگابایت) دانلود می‌شود.\nاینترنت پایدار لازم است و صفحه را نبندید. ادامه؟`, { yes: "ادامه" }))) return;
+      const nParts = Math.ceil(items.length / PART_SIZE);
+
+      // عکس‌هایی که قبلاً روی همین دستگاه دانلود شده‌اند دوباره از سرور گرفته نمی‌شوند
+      stage = "بررسی حافظهٔ دستگاه";
+      const cached = await getCached([...new Set(items.map((it) => it.id))]);
+      const nNeed = items.filter((it) => !cached.has(it.id)).length;
+
+      if (items.length > 80 || nParts > 1) {
+        const prevJob = j;
+        j.done();
+        const mb = Math.round(nNeed * 0.15);
+        const msg = `${toPersianDigits(items.length)} عکس` + (cached.size ? ` (${toPersianDigits(items.filter((it) => cached.has(it.id)).length)} عدد از قبل روی همین دستگاه است)` : "") +
+          `؛ حدود ${toPersianDigits(mb)} مگابایت باید دانلود شود.` +
+          (nParts > 1 ? `\nعکس‌ها در ${toPersianDigits(nParts)} فایل ZIP پشت‌سرهم ذخیره می‌شوند؛ اگر مرورگر دربارهٔ «دانلودهای چندگانه» پرسید، اجازه دهید.` : "") +
+          "\nاینترنت پایدار لازم است و صفحه را نبندید. ادامه؟";
+        if (!(await confirmBox(msg, { yes: "ادامه" }))) return;
+        j = makeJob(TOTAL, prevJob);
       }
 
-      const entries = [{ name: `${root}/گزارش.xlsx`, data: await buildAdminXlsx(recs, filters) }];
-      const byId = new Map(items.map((it) => [it.id, it]));
-      let got_n = 0, skipped = 0;
-      const bb = busy("در حال دریافت عکس‌ها…");
-      try {
-        for (let i = 0; i < items.length; i += BATCH) {
-          const ids = items.slice(i, i + BATCH).map((it) => it.id);
-          let res = await serverCall("getPhotos", { ...pick(filters), fileIds: ids });
-          if (!res.ok) res = await serverCall("getPhotos", { ...pick(filters), fileIds: ids });
-          if (!res.ok) { skipped += ids.length; if (!navigator.onLine) break; continue; }
-          for (const ph of res.photos) {
-            entries.push({ name: byId.get(ph.id).path, data: b64ToBytes(ph.data) });
-            got_n++;
-          }
-          skipped += (res.missing || []).length;
-          bb.text(`دریافت عکس ${toPersianDigits(Math.min(i + BATCH, items.length))} از ${toPersianDigits(items.length)}`);
-          bb.progress(Math.min(i + BATCH, items.length) / items.length);
+      stage = "ساخت Excel گزارش";
+      j.step(2, "ساخت Excel گزارش و تأیید عکس‌ها…");
+      await sleep(0);
+      const excel = { name: `${root}/گزارش.xlsx`, data: await buildAdminXlsx(recs, filters) };
+      j.mark("Excel");
+
+      // مرحلهٔ تأیید: شناسه‌ها یک‌بار با شیت سنجیده می‌شوند (سرور جدید)؛ سرور قدیمی → روش قبلی
+      stage = "تأیید عکس‌ها در سرور";
+      let sigs = null, perCall = OLD_BATCH;
+      const needIds = [...new Set(items.filter((it) => !cached.has(it.id)).map((it) => it.id))];
+      if (needIds.length) {
+        const sres = await serverCall("signPhotos", { ...pick(filters), fileIds: needIds });
+        j.srv(sres);
+        if (sres.ok && sres.sigs) { sigs = sres.sigs; perCall = Math.max(1, Math.min(Number(sres.perCall) || OLD_BATCH, MAX_BATCH)); }
+        else if (FATAL.test(String(sres.error))) { await failStage(j, "تأیید عکس‌ها در سرور", sres); return; }
+        j.mark("تأیید");
+      }
+      const signed = !!sigs;
+
+      const dlName = (k) => (nParts > 1 ? `${root}_بخش-${toPersianDigits(k + 1)}-از-${toPersianDigits(nParts)}.zip` : `${root}.zip`);
+      let doneN = 0, gotN = 0, fromCache = 0, failN = 0, fast = 0, fatal = "", lastErr = "", streak = 0;
+      const saved = [];
+      const pending = [];
+
+      for (let k = 0; k < nParts; k++) {
+        const part = items.slice(k * PART_SIZE, (k + 1) * PART_SIZE);
+        const tag = nParts > 1 ? `بخش ${toPersianDigits(k + 1)} از ${toPersianDigits(nParts)} — ` : "";
+        const entries = k === 0 ? [excel] : [];
+        const need = [];
+        for (const it of part) {
+          const c = cached.get(it.id);
+          if (c) { entries.push({ name: it.path, data: c }); gotN++; fromCache++; doneN++; }
+          else if (signed && !sigs[it.id]) { failN++; doneN++; lastErr = lastErr || "عکس در شیت ثبت نشده است"; }
+          else need.push(it);
         }
-        bb.text("در حال ساخت فایل ZIP…");
+
+        stage = "دریافت عکس‌ها";
+        j.step(3, `${tag}دریافت عکس‌ها: ${toPersianDigits(doneN)} از ${toPersianDigits(items.length)}`);
+        const byId = new Map();
+        for (const it of need) { if (!byId.has(it.id)) byId.set(it.id, []); byId.get(it.id).push(it); }
+        const uniq = [...byId.keys()];
+        const batches = [];
+        for (let i = 0; i < uniq.length; i += perCall) batches.push(uniq.slice(i, i + perCall));
+        let next = 0;
+        const worker = async () => {
+          while (!fatal) {
+            const bi = next++;
+            if (bi >= batches.length) return;
+            const ids = batches[bi];
+            const files = ids.map((id) => ({ id, ...(signed ? { sig: sigs[id] } : {}) }));
+            const res = await getBatch(j, filters, files, signed);
+            const count = ids.reduce((t, id) => t + byId.get(id).length, 0);
+            if (res.ok) {
+              streak = 0;
+              fast += res.fast || 0;
+              const toCache = [];
+              const have = new Set();
+              for (const ph of res.photos || []) {
+                const list = byId.get(ph.id);
+                if (!list) continue;
+                const bytes = b64ToBytes(ph.data);
+                have.add(ph.id);
+                list.forEach((it) => { entries.push({ name: it.path, data: bytes }); gotN++; });
+                toCache.push({ id: ph.id, bytes });
+              }
+              ids.forEach((id) => { if (!have.has(id)) failN += byId.get(id).length; });
+              if (res.error) lastErr = res.error;
+              if (toCache.length) pending.push(putCached(toCache));
+            } else {
+              failN += count;
+              lastErr = res.error || lastErr;
+              if (FATAL.test(String(res.error))) fatal = res.error;
+              else if (++streak >= 4) fatal = "سرور چند بار پشت‌سرهم پاسخ نداد: " + String(res.error || "");
+            }
+            doneN += count;
+            j.detail(`${tag}دریافت عکس‌ها: ${toPersianDigits(Math.min(doneN, items.length))} از ${toPersianDigits(items.length)}` + (failN ? `\n(${toPersianDigits(failN)} عکس دریافت نشد)` : ""));
+            j.progress(Math.min(doneN, items.length) / items.length);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(PHOTO_WORKERS, batches.length) }, worker));
+        j.mark(`عکس‌ها${nParts > 1 ? " " + toPersianDigits(k + 1) : ""}`);
+
+        const photosInPart = entries.length - (k === 0 ? 1 : 0);
+        if (!photosInPart) { if (fatal) break; continue; } // این بخش عکسی نیاورد: ZIP خالی ساخته نمی‌شود
+
+        stage = "ساخت فایل ZIP";
+        j.step(4, `${tag}ساخت فایل ZIP (${toPersianDigits(photosInPart)} عکس${k === 0 ? " + Excel" : ""})…`);
+        await sleep(0);
         const zip = await createZip(entries);
-        const file = `${root}.zip`;
-        downloadBlob(zip, file);
-        links.append(h("p", { class: "info-text" }, `ذخیره شد: ${file} — ${toPersianDigits(got_n)} عکس + Excel` + (skipped ? ` (${toPersianDigits(skipped)} عکس دریافت نشد؛ دوباره امتحان کنید)` : "")));
-        toast(skipped ? "ZIP ساخته شد (بعضی عکس‌ها نیامد)" : "ZIP ذخیره شد", skipped ? "error" : "success");
-      } finally { bb.done(); }
-    } catch (e) {
-      console.error(e);
-      toast("ساخت ZIP ناموفق بود: " + (e.message || e), "error");
-    } finally { b.done(); }
+        j.mark(`ZIP${nParts > 1 ? " " + toPersianDigits(k + 1) : ""}`);
+
+        stage = "ذخیره فایل";
+        j.step(5, `${tag}ذخیرهٔ فایل روی دستگاه…`);
+        downloadBlob(zip, dlName(k));
+        saved.push(dlName(k));
+        if (k < nParts - 1 && !fatal) await sleep(900); // فاصله تا مرورگر دانلودها را پشت‌سرهم بپذیرد
+        if (fatal) break;
+      }
+      await Promise.all(pending);
+      j.done();
+
+      if (!gotN) {
+        await failStage(null, "دریافت عکس‌ها", { error: fatal || lastErr || "عکسی از سرور دریافت نشد (فایل‌ها در Drive پیدا نشدند)" });
+        return;
+      }
+      failN = items.length - gotN; // شامل بخش‌هایی که به‌خاطر خطای قطعی اصلاً شروع نشدند
+      const cacheNote = fromCache ? ` — ${toPersianDigits(fromCache)} عکس از حافظهٔ دستگاه` : "";
+      const modeNote = !needIds.length ? "" : signed ? (fast ? " — دریافت سریع" : "") : " — روش قدیمی (اسکریپت سرور را به‌روز کنید)";
+      showSummary(j, `ذخیره شد: ${saved.join(" ، ")} — ${toPersianDigits(gotN)} عکس + Excel${cacheNote}${modeNote}` + (failN ? ` (${toPersianDigits(failN)} عکس دریافت نشد؛ دوباره امتحان کنید)` : ""));
+      if (failN) {
+        const x = explain({ error: fatal || lastErr });
+        await alertBox(`ZIP ذخیره شد، اما ${toPersianDigits(failN)} عکس از ${toPersianDigits(items.length)} عکس دریافت نشد.\n\n` + (fatal || lastErr ? `علت: ${x.why}\nراه‌حل: ${x.tip}\n\nجزئیات فنی: ${x.raw}` : "علت: فایل آن عکس‌ها در Drive پیدا نشد یا دسترسی نداشت.") + "\n\nدوباره همین دانلود را بزنید؛ عکس‌های گرفته‌شده از حافظهٔ دستگاه می‌آیند و فقط عکس‌های ناموفق دوباره از سرور گرفته می‌شوند.", "ZIP ناقص ذخیره شد");
+      } else toast(`${nParts > 1 ? "ZIPها" : "ZIP"} ذخیره شد — ${toPersianDigits(gotN)} عکس`, "success");
+    } catch (e) { await failBuild(j, stage, e); } finally { j.done(); }
+  }
+
+  async function clearPhotoCache() {
+    const n = await cacheCount();
+    if (!n) return toast("حافظهٔ عکس‌ها خالی است", "success");
+    if (!(await confirmBox(`${toPersianDigits(n)} عکس برای سرعت بیشتر روی همین دستگاه نگه داشته شده است.\nپاک شود؟ (دانلود بعدی کندتر می‌شود)`, { yes: "پاک شود", danger: true }))) return;
+    await clearCache();
+    toast("حافظهٔ عکس‌ها پاک شد", "success");
   }
   const pick = (f) => ({ adminKey: f.adminKey });
 
@@ -503,7 +764,8 @@ export function createAdminModule({ getUser }) {
             h("button", { type: "button", class: "btn btn-danger", onclick: exportPdf }, h("span", { class: "ico-sm", html: ICONS.pdf }), "خروجی PDF"),
             h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, h("span", { class: "ico-sm", html: ICONS.zip }), "ZIP عکس‌ها (حداقل یک فیلتر، تاریخ ≤ ۱۰ روز)")
           ),
-          links
+          links,
+          h("div", { style: "margin-top:8px" }, h("button", { type: "button", class: "btn btn-secondary btn-xs", onclick: clearPhotoCache }, "پاک کردن حافظهٔ عکس‌های دانلودشده"))
         ),
         h("div", { class: "card card-elevated" }, result)
       );

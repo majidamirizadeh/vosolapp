@@ -43,7 +43,7 @@ export async function downscale(file, maxSide = CONFIG.photos.maxSide, quality =
 }
 
 /**
- * مهر: نوار نیمه‌شفاف پایین عکس. هر گروه = دو سطر (عنوان‌ها بالا، مقدارها پایین).
+ * مهر: دو نوار نیمه‌شفاف — بالای عکس (عملیات، اشتراک، تاریخ، امور، شهر) و پایین عکس (بقیه). هر گروه = دو سطر (عنوان‌ها بالا، مقدارها پایین).
  * فونت درشت است؛ اگر همه ستون‌ها در یک گروه جا نشوند، به ۲ یا ۳ گروه (نوار چندطبقه) تقسیم می‌شوند.
  * @param {Blob} blob عکس بدون مهر
  * @param {{cols:{label:string,value:string}[]}} info
@@ -58,22 +58,27 @@ export async function stampPhoto(blob, info, opts = {}) {
   ctx.drawImage(bmp, 0, 0, w, h);
   bmp.close?.();
 
-  const cols = (info.cols || []).filter((x) => x.value !== "" && x.value != null);
-  if (st.enabled !== false && cols.length) {
+  const allCols = (info.cols || []).filter((x) => x.value !== "" && x.value != null);
+  if (st.enabled !== false && allCols.length) {
     await ensureFonts();
     const family = `Vazirmatn, Tahoma, "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif`;
     const avail = w - 12;
     ctx.direction = "rtl";
     ctx.textBaseline = "middle";
 
-    const colWidths = (size) => {
+    // دو نوار با یک قالب و رنگ: بالای عکس (عملیات، اشتراک، تاریخ، امور، شهر) و پایین عکس (بقیه)
+    const TOP_LABELS = ["عملیات", "اشتراک", "تاریخ", "امور", "شهر/بخش"];
+    const topCols = allCols.filter((x) => TOP_LABELS.includes(x.label));
+    const botCols = allCols.filter((x) => !TOP_LABELS.includes(x.label));
+
+    const colWidths = (cols, size) => {
       ctx.font = `700 ${size}px ${family}`;
       const gap = Math.round(size * 1.0);
       return cols.map((x) => Math.ceil(Math.max(ctx.measureText(x.label).width, ctx.measureText(String(x.value)).width)) + gap);
     };
-    // تقسیم ستون‌ها به g گروه پشت‌سرهم؛ خروجی null اگر جا نشود
-    const layout = (size, g) => {
-      const widths = colWidths(size);
+    // تقسیم ستون‌ها به g گروه پشت‌سرهم
+    const layout = (cols, size, g) => {
+      const widths = colWidths(cols, size);
       const per = Math.ceil(cols.length / g);
       const groups = [];
       for (let a = 0; a < cols.length; a += per) {
@@ -84,53 +89,62 @@ export async function stampPhoto(blob, info, opts = {}) {
       const worst = Math.max(...groups.map((x) => x.total));
       return { widths, groups, worst };
     };
-
-    // هدف: فونت درشت؛ کمترین تعداد طبقه که جا شود، وگرنه فونت کمی کوچک‌تر
-    let fs = Math.max(12, Math.round(w * st.fontRatio));
     const maxGroups = st.maxGroups || 3;
-    let L = null;
-    for (; fs >= 12 && !L; fs--) {
-      for (let g = 1; g <= maxGroups; g++) {
-        const t = layout(fs, g);
-        if (t.worst <= avail) { L = t; break; }
+    const target = Math.max(12, Math.round(w * st.fontRatio));
+    // بزرگ‌ترین فونتی که همهٔ ستون‌های یک نوار در آن جا شود
+    const fitSize = (cols) => {
+      for (let f = target; f >= 12; f--) {
+        for (let g = 1; g <= maxGroups; g++) if (layout(cols, f, g).worst <= avail) return f;
       }
-    }
-    fs += 1;
-    if (!L) { fs = 12; L = layout(fs, maxGroups); }
-    const k = L.worst > avail ? avail / L.worst : 1; // آخرین چاره: فشرده‌سازی افقی
-
+      return 12;
+    };
+    // فونت هر دو نوار یکسان است (کوچک‌تر از دو اندازه)
+    const fs = Math.min(...[topCols, botCols].filter((x) => x.length).map(fitSize));
     const lineH = Math.round(fs * 1.5);
     const groupH = lineH * 2 + Math.round(fs * 0.5);
-    const barH = groupH * L.groups.length + Math.round(fs * 0.2);
-    const y0 = h - barH;
-    ctx.fillStyle = `rgba(0,0,0,${st.bgOpacity ?? 0.6})`;
-    ctx.fillRect(0, y0, w, barH);
 
-    ctx.textAlign = "center";
-    L.groups.forEach((grp, gi) => {
-      const total = grp.total * k;
-      let x = (w + total) / 2; // وسط‌چین؛ ستون اول سمت راست
-      const yL = y0 + gi * groupH + Math.round(fs * 0.3) + lineH / 2;
-      const yV = yL + lineH;
-      if (gi > 0) {
-        ctx.fillStyle = "rgba(255,255,255,0.2)";
-        ctx.fillRect(w * 0.03, y0 + gi * groupH, w * 0.94, 1);
+    const drawBar = (cols, atTop) => {
+      if (!cols.length) return;
+      let L = null;
+      for (let g = 1; g <= maxGroups && !L; g++) {
+        const t = layout(cols, fs, g);
+        if (t.worst <= avail) L = t;
       }
-      grp.idx.forEach((ci, n) => {
-        const cw = L.widths[ci] * k;
-        const cx = x - cw / 2;
-        ctx.font = `700 ${fs}px ${family}`;
-        ctx.fillStyle = "#ffd54a";
-        ctx.fillText(cols[ci].label, cx, yL, cw - 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(String(cols[ci].value), cx, yV, cw - 2);
-        if (n < grp.idx.length - 1) {
-          ctx.fillStyle = "rgba(255,255,255,0.25)";
-          ctx.fillRect(x - cw, y0 + gi * groupH + fs * 0.4, 1, groupH - fs * 0.6);
+      if (!L) L = layout(cols, fs, maxGroups);
+      const k = L.worst > avail ? avail / L.worst : 1; // آخرین چاره: فشرده‌سازی افقی
+      const barH = groupH * L.groups.length + Math.round(fs * 0.2);
+      const y0 = atTop ? 0 : h - barH;
+      ctx.fillStyle = `rgba(0,0,0,${st.bgOpacity ?? 0.6})`;
+      ctx.fillRect(0, y0, w, barH);
+
+      ctx.textAlign = "center";
+      L.groups.forEach((grp, gi) => {
+        const total = grp.total * k;
+        let x = (w + total) / 2; // وسط‌چین؛ ستون اول سمت راست
+        const yL = y0 + gi * groupH + Math.round(fs * 0.3) + lineH / 2;
+        const yV = yL + lineH;
+        if (gi > 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.2)";
+          ctx.fillRect(w * 0.03, y0 + gi * groupH, w * 0.94, 1);
         }
-        x -= cw;
+        grp.idx.forEach((ci, n) => {
+          const cw = L.widths[ci] * k;
+          const cx = x - cw / 2;
+          ctx.font = `700 ${fs}px ${family}`;
+          ctx.fillStyle = "#ffd54a";
+          ctx.fillText(cols[ci].label, cx, yL, cw - 2);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(String(cols[ci].value), cx, yV, cw - 2);
+          if (n < grp.idx.length - 1) {
+            ctx.fillStyle = "rgba(255,255,255,0.25)";
+            ctx.fillRect(x - cw, y0 + gi * groupH + fs * 0.4, 1, groupH - fs * 0.6);
+          }
+          x -= cw;
+        });
       });
-    });
+    };
+    drawBar(topCols, true);
+    drawBar(botCols, false);
   }
   return { blob: await toBlob(c, "image/jpeg", CONFIG.photos.quality), width: w, height: h };
 }
