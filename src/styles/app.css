@@ -414,6 +414,8 @@ option { color: var(--ink); }
 }
 .switch-row input[type=checkbox]:checked { background: linear-gradient(135deg, #2bc27b, #12a05b); }
 .switch-row input[type=checkbox]:checked::after { transform: translateX(-19px); }
+.switch-row.locked { opacity: .8; }
+.switch-row input[type=checkbox]:disabled { cursor: not-allowed; opacity: .75; }
 .switch-row input[type=checkbox]:focus-visible { box-shadow: 0 0 0 4px rgba(13, 110, 253, .2); }
 .folder-box { padding-top: 10px; font-size: .82rem; line-height: 1.7; }
 .folder-box > div > .btn, .folder-box .btn { display: inline-flex; width: auto; padding: 0 14px; margin: 8px 0 0 6px; }
@@ -479,6 +481,21 @@ option { color: var(--ink); }
   text-align: center; color: rgba(255, 255, 255, .92); font-size: .74rem; line-height: 1.8; text-shadow: 0 1px 3px rgba(0, 0, 0, .35);
 }
 .login-err { color: var(--danger-d); font-size: .8rem; min-height: 1.3em; margin-top: 8px; text-align: center; font-weight: 700; }
+
+/* صفحهٔ خوش‌آمدگویی (روی همان زمینهٔ صفحهٔ ورود) */
+.welcome-box .wl-name { text-align: center; color: var(--brand-d); font-weight: 700; font-size: 1rem; margin-top: 6px; }
+.welcome-box .info-text.center { text-align: center; }
+.wl-folder { margin-top: 14px; padding: 12px 14px 14px; border-radius: 16px; background: #fff8e6; box-shadow: inset 0 0 0 1px #f3dca0; }
+.wl-folder.ok { background: #eaf8ef; box-shadow: inset 0 0 0 1px #b8e3c6; }
+.wl-fhead { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: .88rem; }
+.wl-ico { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; border-radius: 9px; background: #ffd24a; color: #5a4300; flex: none; }
+.wl-folder.ok .wl-ico { background: #36b866; color: #fff; }
+.wl-ico .ico-svg { width: 18px; height: 18px; }
+.wl-folder .info-text { margin-top: 6px; }
+.wl-folder .btn { margin-top: 10px; }
+.wl-later { display: block; margin: 10px auto 0; padding: 6px 12px; border: 0; background: none; color: var(--ink3); font: inherit; font-size: .8rem; cursor: pointer; text-decoration: underline; }
+.wl-later[hidden] { display: none; }
+@media (max-height: 640px) { .welcome-box { padding-top: 22px; } .wl-folder .info-text { font-size: .72rem; } }
 
 /* ═══════════════════════════════════════════════════════════════════
  *  پیام‌ها ، پنجره‌ها ، در حال انجام
