@@ -3,7 +3,7 @@ import { CONFIG } from "../../config/app.config.js";
 import { kv } from "./db.js";
 
 const DEFAULTS = {
-  autoSavePhotos: CONFIG.device.autoSavePhotos,
+  autoSavePhotos: true, // پیش‌فرض روشن
   autoSync: true, // پیش‌فرض روشن (کاربری که قبلاً دستی تغییر داده، انتخاب خودش حفظ می‌شود)
   allUsersOnPhone: false,
 };
@@ -15,9 +15,16 @@ export async function loadPrefs() {
   return cache;
 }
 
-export const getPref = (k) => (cache ? cache[k] : DEFAULTS[k]);
+/** گزینه‌هایی که برای کاربران غیرادمین همیشه روشن و غیرقابل‌تغییرند */
+export const LOCKED_KEYS = ["autoSavePhotos", "autoSync"];
+let locked = false;
+export const setPrefsLocked = (v) => { locked = !!v; };
+export const isPrefLocked = (k) => locked && LOCKED_KEYS.includes(k);
+
+export const getPref = (k) => (isPrefLocked(k) ? true : cache ? cache[k] : DEFAULTS[k]);
 
 export async function setPref(k, v) {
+  if (isPrefLocked(k)) return; // کاربر عادی نمی‌تواند این گزینه را تغییر دهد
   cache = { ...(cache || DEFAULTS), [k]: v };
   await kv.set("prefs", cache);
 }

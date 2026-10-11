@@ -35,5 +35,6 @@ export const ICONS = {
   share: svg('<circle cx="17.5" cy="6" r="2.4"/><circle cx="6.5" cy="12" r="2.4"/><circle cx="17.5" cy="18" r="2.4"/><path d="m8.6 10.8 6.8-3.6M8.6 13.2l6.8 3.6"/>'),
   file: svg('<path d="M7 3.5h7l4.5 4.5v11A1.5 1.5 0 0 1 17 20.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M14 3.8V8h4.2"/>'),
   send: svg('<path d="M20.5 4 10.5 14"/><path d="M20.5 4 14 20l-3.5-6L4.5 10.5z"/>'),
+  folder: svg('<path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h3.2a1.5 1.5 0 0 1 1.2.6l1.1 1.4H18A2.5 2.5 0 0 1 20.5 9.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5z"/>'),
   calendar: svg('<rect x="4" y="5.5" width="16" height="14.5" rx="3"/><path d="M4 10.5h16M8.5 3.5v4M15.5 3.5v4"/>'),
 };
