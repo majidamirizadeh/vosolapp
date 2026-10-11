@@ -17,6 +17,10 @@
  *  ✔ listRecords       فهرست رکوردها با فیلتر (تاریخ، اکیپ، نوع عملیات، امور، اشتراک) + لینک عکس‌ها
  *  ✔ getSummary        جمع تعداد/مبلغ به تفکیک نوع عملیات، اکیپ و امور
  *  ✔ getPhotos         چند عکس (با شناسه فایل) به‌صورت base64 — گوشی ادمین ZIP + Excel را خودش می‌سازد و دانلود می‌کند
+ *  ✔ signPhotos        (نسخه ۴.۲) یک‌بار مجاز بودن شناسه‌ها را با شیت می‌سنجد و برای هر کدام امضا می‌دهد؛
+ *                      getPhotos با امضا دیگر کل شیت را نمی‌خواند و عکس‌ها را هم‌زمان (UrlFetchApp.fetchAll) می‌گیرد
+ *  ✔ listRecords       پارامترهای اختیاری: noLinks (بدون لینک عکس‌ها = سبک‌تر) و withSummary (جمع‌ها در همان پاسخ)
+ *  ✔ همهٔ پاسخ‌های ادمین فیلد ms (زمان اجرای سرور، میلی‌ثانیه) دارند
  *  ✔ این اکشن‌ها علاوه بر APP_TOKEN، «ADMIN_KEY» هم می‌خواهند (باید با رمز ورود ادمین یکی باشد)
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
  *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
@@ -35,7 +39,7 @@ const SETTINGS = {
   // (چون APP_TOKEN داخل برنامه‌ی همه اکیپ‌ها هست، اکشن‌های گزارش بدون این رمز کار نمی‌کنند.)
   ADMIN_KEY: "admin1405",
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
-  PHOTOS_PER_CALL: 6,       // حداکثر تعداد عکس در هر درخواست getPhotos
+  PHOTOS_PER_CALL: 20,      // حداکثر تعداد عکس در هر درخواست getPhotos (عکس‌ها هم‌زمان خوانده می‌شوند)
   MAX_BATCH: 5,             // حداکثر تعداد رکورد در هر درخواست submitBatch
 };
 // ====================================================
@@ -58,7 +62,7 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 42, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 43, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -274,6 +278,12 @@ function authorize() {
   ensureFormats_(sheet);
   LockService.getScriptLock();
   CacheService.getScriptCache();
+  // نسخهٔ ۴.۲: دریافت سریع عکس‌ها از Drive API؛ این خط مجوز UrlFetchApp را هم می‌گیرد و دسترسی را می‌آزماید
+  try {
+    const r = UrlFetchApp.fetch("https://www.googleapis.com/drive/v3/about?fields=user",
+      { headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    Logger.log("Drive API: HTTP " + r.getResponseCode());
+  } catch (e) { Logger.log("Drive API در دسترس نیست (دریافت عکس با روش قدیمی ادامه می‌یابد): " + e); }
   Logger.log("OK");
 }
 
@@ -286,6 +296,7 @@ const ADMIN_ACTIONS_ = {
   listRecords: listRecords_,
   getSummary: getSummary_,
   getPhotos: getPhotos_,
+  signPhotos: signPhotos_,
 };
 
 function checkAdmin_(data) {
@@ -325,9 +336,9 @@ function code2_(v) {
 }
 
 /** فایل‌های ردیف شیت → آبجکت رکورد */
-function rowToRecord_(row) {
+function rowToRecord_(row, noLinks) {
   const links = [];
-  for (let i = 17; i <= 20; i++) if (row[i]) links.push(String(row[i]));
+  if (!noLinks) for (let i = 17; i <= 20; i++) if (row[i]) links.push(String(row[i])); // noLinks=true → پاسخ سبک‌تر و سریع‌تر
   const t = row[0];
   return {
     serverTime: t instanceof Date ? Utilities.formatDate(t, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss") : String(t || ""),
@@ -354,15 +365,34 @@ function rowToRecord_(row) {
 }
 
 /** خواندن و فیلتر ردیف‌ها؛ جدیدترین اول */
-function filterRecords_(data) {
+function filterRecords_(data, noLinks) {
   const sheet = getSheet_();
   const last = sheet.getLastRow();
   if (last < 2) return [];
-  const rows = sheet.getRange(2, 1, last - 1, HEADERS.length).getValues();
+  const n = last - 1;
 
   const from = data.fromDate ? dateKey_(data.fromDate) : 0;
   const to = data.toDate ? dateKey_(data.toDate) : 99999999;
   const lo = Math.min(from, to), hi = Math.max(from, to);
+
+  // با فیلتر تاریخ: ابتدا فقط ستون تاریخ خوانده می‌شود و فقط بلوک ردیف‌های همان بازه کامل خوانده می‌شود
+  // (ردیف‌ها تقریباً به ترتیب زمان ثبت می‌آیند؛ ردیف‌های بیرون بلوک هرگز با فیلتر تاریخ جور نبودند)
+  let offset = 0, count = n;
+  if (data.fromDate || data.toDate) {
+    const dcol = sheet.getRange(2, DATE_COL, n, 1).getValues();
+    let first = -1, lastHit = -1;
+    for (let i = 0; i < n; i++) {
+      const k = dateKey_(dcol[i][0]);
+      if (k < lo || k > hi) continue;
+      if (first < 0) first = i;
+      lastHit = i;
+    }
+    if (first < 0) return [];
+    offset = first;
+    count = lastHit - first + 1;
+  }
+  const rows = sheet.getRange(2 + offset, 1, count, HEADERS.length).getValues();
+
   const wantCode = data.userCode ? codeKey_(data.userCode) : "";
   const wantMode = data.modeTitle ? normText_(data.modeTitle) : "";
   const wantOmoor = data.omoor ? normText_(data.omoor) : "";
@@ -380,19 +410,12 @@ function filterRecords_(data) {
     if (wantMode && normText_(r[4]) !== wantMode) continue;
     if (wantOmoor && normText_(r[6]) !== wantOmoor) continue;
     if (wantEsh && latin_(r[9]).replace(/\D/g, "") !== wantEsh) continue;
-    out.push(rowToRecord_(r));
+    out.push(rowToRecord_(r, noLinks));
   }
   return out;
 }
 
-function listRecords_(data) {
-  const all = filterRecords_(data);
-  const limit = Math.min(Math.max(Number(data.limit) || SETTINGS.MAX_LIST, 1), 20000);
-  return { ok: true, total: all.length, truncated: all.length > limit, records: all.slice(0, limit) };
-}
-
-function getSummary_(data) {
-  const all = filterRecords_(data);
+function summarize_(all) {
   const out = { ok: true, totalCount: all.length, totalAmount: 0, byMode: {}, byUser: {}, byOmoor: {} };
   function add(map, key, amount) {
     key = key || "—";
@@ -409,19 +432,30 @@ function getSummary_(data) {
   return out;
 }
 
+function listRecords_(data) {
+  const t0 = Date.now();
+  const all = filterRecords_(data, data.noLinks === true);
+  const limit = Math.min(Math.max(Number(data.limit) || SETTINGS.MAX_LIST, 1), 20000);
+  const out = { ok: true, total: all.length, truncated: all.length > limit, records: all.slice(0, limit) };
+  if (data.withSummary === true) out.summary = summarize_(all); // جمع‌ها در همان پاسخ (یک خواندن شیت به‌جای دو)
+  out.ms = Date.now() - t0;
+  return out;
+}
+
+function getSummary_(data) {
+  const t0 = Date.now();
+  const out = summarize_(filterRecords_(data, true));
+  out.ms = Date.now() - t0;
+  return out;
+}
+
 function fileIdFromUrl_(url) {
   const m = String(url).match(/[-\w]{25,}/);
   return m ? m[0] : "";
 }
 
-/**
- * چند عکس را با شناسه فایل برمی‌گرداند (base64).
- * فقط فایل‌هایی مجازند که لینکشان در شیت ثبت شده است (با رمز ادمین هم نمی‌شود فایل دلخواه Drive را خواند).
- */
-function getPhotos_(data) {
-  const ids = (data.fileIds || []).slice(0, SETTINGS.PHOTOS_PER_CALL).map(String);
-  if (!ids.length) return { ok: true, photos: [], missing: [] };
-
+/** مجموعهٔ شناسه فایل‌های ثبت‌شده در شیت (فقط همین‌ها قابل خواندن‌اند) */
+function allowedIds_() {
   const allowed = {};
   const sheet = getSheet_();
   const last = sheet.getLastRow();
@@ -430,14 +464,84 @@ function getPhotos_(data) {
       row.forEach(function (u) { const id = fileIdFromUrl_(u); if (id) allowed[id] = true; });
     });
   }
+  return allowed;
+}
 
+/** امضای کوتاه یک شناسه فایل (HMAC با رمز ادمین) — بدون رمز ادمین قابل ساختن نیست */
+function sigOf_(id) {
+  const raw = Utilities.computeHmacSha256Signature(String(id), String(SETTINGS.ADMIN_KEY) + "|photo");
+  return Utilities.base64EncodeWebSafe(raw).slice(0, 22);
+}
+
+/**
+ * مرحلهٔ اول دانلود ZIP: شناسه‌ها را یک‌بار با شیت می‌سنجد و برای مجازها امضا می‌دهد.
+ * بعد getPhotos با {files:[{id,sig}]} دیگر نیازی به خواندن شیت ندارد.
+ */
+function signPhotos_(data) {
+  const t0 = Date.now();
+  const ids = (data.fileIds || []).slice(0, 3000).map(String);
+  const allowed = allowedIds_();
+  const sigs = {}, missing = [];
+  ids.forEach(function (id) { if (allowed[id]) sigs[id] = sigOf_(id); else missing.push(id); });
+  return { ok: true, sigs: sigs, missing: missing, perCall: SETTINGS.PHOTOS_PER_CALL, ms: Date.now() - t0 };
+}
+
+/** خواندن هم‌زمان چند فایل از Drive API؛ هر فایلی که نیامد با DriveApp (روش قدیمی) تلاش مجدد می‌شود */
+function readPhotos_(ids) {
+  const got = {};
+  let token = "";
+  try { token = ScriptApp.getOAuthToken(); } catch (e) { token = ""; }
+  if (token && ids.length) {
+    try {
+      const reqs = ids.map(function (id) {
+        return {
+          url: "https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(id) + "?alt=media&supportsAllDrives=true",
+          headers: { Authorization: "Bearer " + token },
+          muteHttpExceptions: true,
+        };
+      });
+      UrlFetchApp.fetchAll(reqs).forEach(function (r, i) {
+        if (r.getResponseCode() !== 200) return;
+        const hdr = r.getHeaders() || {};
+        const ct = String(hdr["Content-Type"] || hdr["content-type"] || "image/jpeg").split(";")[0];
+        got[ids[i]] = { id: ids[i], name: "", type: ct, data: Utilities.base64Encode(r.getContent()) };
+      });
+    } catch (e) { /* مجوز UrlFetchApp/Drive API نیست → روش قدیمی */ }
+  }
   const photos = [], missing = [];
   ids.forEach(function (id) {
-    if (!allowed[id]) { missing.push(id); return; }
+    if (got[id]) { photos.push(got[id]); return; }
     try {
       const b = DriveApp.getFileById(id).getBlob();
       photos.push({ id: id, name: b.getName(), type: b.getContentType(), data: Utilities.base64Encode(b.getBytes()) });
     } catch (e) { missing.push(id); }
   });
-  return { ok: true, photos: photos, missing: missing };
+  return { photos: photos, missing: missing, fast: Object.keys(got).length };
+}
+
+/**
+ * چند عکس را با شناسه فایل برمی‌گرداند (base64).
+ * دو روش:
+ *  • جدید: data.files = [{id, sig}] — امضا از signPhotos؛ بدون خواندن شیت
+ *  • قدیمی (سازگار با برنامهٔ نسخه‌های قبل): data.fileIds — فقط فایل‌هایی مجازند که لینکشان در شیت ثبت شده است
+ * با رمز ادمین هم نمی‌شود فایل دلخواه Drive را خواند.
+ */
+function getPhotos_(data) {
+  const t0 = Date.now();
+  const max = SETTINGS.PHOTOS_PER_CALL;
+  const bad = [];
+  let ids = [];
+  if (data.files && data.files.length) {
+    data.files.slice(0, max).forEach(function (f) {
+      const id = String(f && f.id || "");
+      if (id && f.sig && String(f.sig) === sigOf_(id)) ids.push(id); else if (id) bad.push(id);
+    });
+  } else {
+    const req = (data.fileIds || []).slice(0, max).map(String);
+    if (!req.length) return { ok: true, photos: [], missing: [], ms: 0 };
+    const allowed = allowedIds_();
+    req.forEach(function (id) { if (allowed[id]) ids.push(id); else bad.push(id); });
+  }
+  const r = ids.length ? readPhotos_(ids) : { photos: [], missing: [], fast: 0 };
+  return { ok: true, photos: r.photos, missing: r.missing.concat(bad), fast: r.fast, ms: Date.now() - t0 };
 }
