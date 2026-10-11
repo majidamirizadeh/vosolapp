@@ -4,7 +4,7 @@
 import { CONFIG } from "../../config/app.config.js";
 import { h, formatBytes, toPersianDigits } from "../core/utils.js";
 import { alertBox, confirmBox, toast } from "../core/ui.js";
-import { getPref, setPref } from "../core/prefs.js";
+import { getPref, setPref, isPrefLocked } from "../core/prefs.js";
 import { bus, EV } from "../core/bus.js";
 import { pickFolder, clearFolder, status, usage, requestPersistence, folderApiSupported } from "./storage.js";
 import { userCount } from "./auth.js";
@@ -14,8 +14,9 @@ export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
   let box;
 
   const toggle = (label, hint, key) => {
-    const input = h("input", { type: "checkbox", checked: !!getPref(key), onchange: (e) => setPref(key, e.target.checked).then(() => bus.emit(EV.RECORDS_CHANGED)) });
-    return h("label", { class: "switch-row" }, h("div", {}, h("div", { class: "sw-title" }, label), h("div", { class: "info-text" }, hint)), input);
+    const lock = isPrefLocked(key); // برای کاربران غیرادمین: همیشه روشن و غیرفعال
+    const input = h("input", { type: "checkbox", checked: !!getPref(key), disabled: lock, onchange: (e) => setPref(key, e.target.checked).then(() => bus.emit(EV.RECORDS_CHANGED)) });
+    return h("label", { class: "switch-row" + (lock ? " locked" : "") }, h("div", {}, h("div", { class: "sw-title" }, label), h("div", { class: "info-text" }, hint + (lock ? " (این گزینه همیشه روشن است و فقط ادمین می‌تواند تغییرش دهد.)" : ""))), input);
   };
 
   async function render() {

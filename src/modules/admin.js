@@ -14,7 +14,7 @@ import { createPdfFromJpegs } from "../lib/pdf.js";
 import { ensureFonts } from "./photos.js";
 import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
-import { splitTotals } from "./records.js";
+import { splitTotals, summarize } from "./records.js";
 import { ICONS } from "../core/icons.js";
 import { getCached, putCached, clearCache, cacheCount } from "./photocache.js";
 
@@ -287,7 +287,7 @@ export function createAdminModule({ getUser }) {
     const k = tableW / cols.reduce((t, c) => t + c.w, 0);
     cols.forEach((c) => (c.w *= k));
 
-    const ROW = 44, HEAD = 52, TOP_FIRST = 410, TOP_NEXT = 100, BOTTOM = 70;
+    const ROW = 44, HEAD = 52, TOP_FIRST = 475, TOP_NEXT = 100, BOTTOM = 70;
     const pagesRows = [];
     let i = 0;
     const firstCap = Math.floor((PH - TOP_FIRST - BOTTOM - HEAD) / ROW);
@@ -326,7 +326,7 @@ export function createAdminModule({ getUser }) {
         ctx.fillText(`مرتب‌سازی: ${sortLabel}${filters.omoor ? "  |  امور: " + filters.omoor : ""}`, PW - M, 158);
         ctx.fillText(toPersianDigits(`تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 196);
 
-        const bx = M, by = 230, bw = 820, bh = 150;
+        const bx = M, by = 230, bw = 820, bh = 215;
         ctx.strokeStyle = "#c5cdd8";
         ctx.lineWidth = 2;
         ctx.strokeRect(bx, by, bw, bh);
@@ -350,6 +350,33 @@ export function createAdminModule({ getUser }) {
           ctx.fillText(`${name}: ${toPersianDigits(v.count)}`, ox, by + 55);
           ox += 260;
         }
+
+        // خلاصهٔ ۶ عملیات: تعداد ثبت و مبلغ (مبلغ هر عملیات بدون تکرار اشتراک، مثل خلاصهٔ داخل برنامه)
+        const byMode = summarize(list).byMode;
+        const cx = bx + bw + 30, cw = PW - M - cx;
+        ctx.strokeStyle = "#c5cdd8";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cx, by, cw, bh);
+        ctx.fillStyle = "#f4f7fb";
+        ctx.fillRect(cx + 1, by + 1, cw - 2, bh - 2);
+        ctx.fillStyle = "#0d6efd";
+        ctx.font = `700 26px ${FONT}`;
+        ctx.textAlign = "right";
+        ctx.fillText("خلاصهٔ عملیات‌ها", cx + cw - 20, by + 32);
+        Object.values(MODES).forEach((m, mi) => {
+          const v = byMode[m.title] || { count: 0, amount: 0 };
+          const ry = by + 68 + mi * 26;
+          if (mi % 2 === 0) { ctx.fillStyle = "#e9eff8"; ctx.fillRect(cx + 10, ry - 13, cw - 20, 26); }
+          ctx.fillStyle = "#222";
+          ctx.font = `700 21px ${FONT}`;
+          ctx.textAlign = "right";
+          ctx.fillText(m.title, cx + cw - 20, ry);
+          ctx.font = `400 21px ${FONT}`;
+          ctx.textAlign = "center";
+          ctx.fillText(`${toPersianDigits(v.count)} مورد`, cx + cw / 2, ry);
+          ctx.textAlign = "left";
+          ctx.fillText(`${formatMoney(v.amount)} ریال`, cx + 22, ry);
+        });
         y = TOP_FIRST - 10;
       }
 
