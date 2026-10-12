@@ -9,7 +9,7 @@
  *  - درخواست‌های خارج از دامنه (سرور گوگل) دست‌نخورده می‌مانند
  */
 /*BUILD:START*/
-const VERSION = "6ca2dedaa2";
+const VERSION = "eb7dfd1765";
 const FILES = [
   "./",
   ".gitattributes",
