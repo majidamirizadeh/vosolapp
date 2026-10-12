@@ -247,6 +247,8 @@ async function start() {
   user = currentUser();
   const justLoggedIn = !user;
   if (!user) user = await showLogin(document.body);
+  // سربرگ: «گزارش میدانی fars01»
+  document.getElementById("appTitle").replaceChildren(h("span", { class: "hdr-app" }, CONFIG.appName), h("span", { class: "hdr-user", dir: "ltr", title: user.name }, user.name));
   setPrefsLocked(!isAdmin(user)); // ذخیرهٔ خودکار عکس و ارسال خودکار: برای غیرادمین قفل (روشن)
   const userLabel = user.name + (isTestUser(user) ? " (تست)" : isAdmin(user) ? " (ادمین)" : "");
   requestPersistence();
