@@ -53,7 +53,7 @@ export function createFormModule({ getUser, onEditDone }) {
     inputs: {},
     editing: null,         // وقتی در حال ویرایش رکورد در انتظار هستیم: { id, info }
   };
-  let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeBtns, editBanner, saveBtn;
+  let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeSel, editBanner, saveBtn;
 
   const mode = () => MODES[state.mode];
 
@@ -166,7 +166,8 @@ export function createFormModule({ getUser, onEditDone }) {
     if (f.labelByMode) amountLabelEl = label;
     // راهنما به‌صورت tooltip/placeholder تا چیدمان دو ستونی جمع بماند
     if (f.hint) input.title = f.hint;
-    return h("div", { class: "field" + (f.wide ? " wide" : "") }, label, input);
+    // «سرگروه» به‌صورت خودکار از نام کاربر (name) پر می‌شود و در فرم دیده نمی‌شود (مقدار همچنان ذخیره می‌شود)
+    return h("div", { class: "field" + (f.wide ? " wide" : "") + (f.key === "leader" ? " is-auto" : "") }, label, input);
   }
 
   /* ───────── «شهر/بخش» وابسته به «امور» ، «آبادی» وابسته به «شهر/بخش» ───────── */
@@ -191,6 +192,12 @@ export function createFormModule({ getUser, onEditDone }) {
     const on = isBakhsh(state.inputs[cityDef.key].value);
     el.disabled = !on;
     if (!on) el.value = "";
+  }
+
+  /** سرگروه = نام کاربر واردشده (نمایش داده نمی‌شود؛ در ثبت، گزارش و جدول‌ها مثل قبل ذخیره می‌شود) */
+  function applyLeader() {
+    const u = getUser();
+    if (u && state.inputs.leader) state.inputs.leader.value = u.name || String(u.code || "");
   }
 
   function readValues() {
@@ -268,11 +275,12 @@ export function createFormModule({ getUser, onEditDone }) {
   async function setMode(key, force = false) {
     if (key === state.mode && !force) return;
     if (!force && state.photos.some(Boolean)) {
-      if (!(await confirmBox("با تغییر نوع فرم، عکس‌های گرفته‌شده پاک می‌شوند. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) return;
+      if (!(await confirmBox("با تغییر نوع فرم، عکس‌های گرفته‌شده پاک می‌شوند. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) { modeSel.value = state.mode; return; }
     }
     state.mode = key;
     revokePhotos();
-    modeBtns.forEach((b) => b.classList.toggle("active", b.dataset.mode === key));
+    modeSel.value = key;
+    modeSel.dataset.mode = key; // رنگ کلید انتخاب بر اساس نوع عملیات (CSS)
     amountLabelEl.firstChild.textContent = mode().amountLabel;
     renderPhotos();
   }
@@ -389,6 +397,7 @@ export function createFormModule({ getUser, onEditDone }) {
       state.inputs[f.key].value = "";
     }
     syncAbadi();
+    applyLeader();
     state.gps = { lat: null, lng: null, accuracy: null };
     showGps();
     revokePhotos();
@@ -410,6 +419,7 @@ export function createFormModule({ getUser, onEditDone }) {
       if (f.key === cityDef.dependsOn) fillCityOptions(false); // فهرست شهر/بخش مربوط به همین امور
     }
     syncAbadi();
+    applyLeader();
     state.inputs.date.value = todayJalali();
     state.gps = { lat: null, lng: null, accuracy: null };
     showGps();
@@ -478,9 +488,9 @@ export function createFormModule({ getUser, onEditDone }) {
     startEdit,
     async mount(container) {
       root = container;
-      modeBtns = Object.entries(MODES).map(([key, m]) =>
-        h("button", { type: "button", class: "mode-btn", "data-mode": key, onclick: () => setMode(key) }, m.title)
-      );
+      // انتخاب نوع عملیات: یک کلید بازشوی تمام‌عرض (به‌جای ۶ دکمه) که با هر گزینه رنگ خودش را می‌گیرد
+      modeSel = h("select", { class: "mode-select", id: "f-mode", "aria-label": "نوع عملیات", onchange: (e) => setMode(e.target.value) },
+        Object.entries(MODES).map(([key, m]) => h("option", { value: key }, m.title)));
       photoBox = h("div", { class: "photos" });
       gpsInfo = h("span", { class: "gps-val" }, "ثبت موقعیت فعلی");
       gpsAcc = h("span", { class: "gps-acc" });
@@ -497,7 +507,7 @@ export function createFormModule({ getUser, onEditDone }) {
       root.append(
         h("div", { class: "card" },
           editBanner,
-          h("div", { class: "mode-btns" }, modeBtns),
+          h("div", { class: "mode-wrap" }, modeSel),
           h("div", { class: "field-grid" }, FIELDS.map(buildField), h("div", { class: "field gps-field" }, gpsBtn)),
           h("div", { class: "field photos-field" }, h("label", {}, "عکس‌ها"), photoBox),
           saveBtn
@@ -515,10 +525,12 @@ export function createFormModule({ getUser, onEditDone }) {
         if (f.key === cityDef.dependsOn) fillCityOptions(false);
       }
       syncAbadi();
+      applyLeader();
       state.inputs.date.value = todayJalali();
       await setMode(state.mode, true);
     },
     onShow() {
+      if (!state.editing) applyLeader();
       // تاریخ پیش‌فرض اگر روز عوض شده یا خالی است
       if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
     },
