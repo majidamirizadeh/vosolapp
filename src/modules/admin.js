@@ -8,6 +8,7 @@ import { OMOORS } from "../../config/omoors.js";
 import { h, downloadBlob, toPersianDigits, toLatinDigits, formatMoney } from "../core/utils.js";
 import { parseJalali, todayJalali, rangePreset, PRESETS, jalaliSpanDays } from "../core/jalali.js";
 import { toast, busy, alertBox, confirmBox, rangeSelect } from "../core/ui.js";
+import { attachDatePicker } from "../core/datepicker.js";
 import { createXlsx } from "../lib/xlsx.js";
 import { createZip } from "../lib/zip.js";
 import { createPdfFromJpegs } from "../lib/pdf.js";
@@ -759,8 +760,8 @@ export function createAdminModule({ getUser }) {
     icon: ICONS.admin,
     mount(container) {
       f.key = h("input", { type: "password", name: "admin-key", dir: "ltr", class: "ltr-in", autocomplete: "new-password", placeholder: "همان رمز ورود ادمین" });
-      f.from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/01" });
-      f.to = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/30" });
+      f.from = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/01" }));
+      f.to = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/30" }));
       f.all = h("input", { type: "checkbox", onchange: () => { f.from.disabled = f.to.disabled = f.all.checked; } });
       f.user = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "مثال: 05 (خالی = همه)" });
       f.mode = h("select", {}, h("option", { value: "" }, "همه عملیات‌ها"), Object.values(MODES).map((m) => h("option", { value: m.title }, m.title)));

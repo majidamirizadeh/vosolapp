@@ -5,6 +5,7 @@ import { MODES } from "../../config/modes.js";
 import { h, downloadBlob, toPersianDigits, formatMoney } from "../core/utils.js";
 import { parseJalali, todayJalali, jalaliKey, rangePreset, PRESETS } from "../core/jalali.js";
 import { toast, busy, rangeSelect } from "../core/ui.js";
+import { attachDatePicker } from "../core/datepicker.js";
 import { getPref } from "../core/prefs.js";
 import { listFor, summarize } from "./records.js";
 import { buildXlsx, buildPdf, buildZip, baseName } from "./exporter.js";
@@ -92,8 +93,8 @@ export function createReportsModule({ getUser }) {
     title: "گزارش",
     icon: ICONS.reports,
     async mount(container) {
-      from = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
-      to = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
+      from = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" }));
+      to = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" }));
       modeSel = h("select", { "aria-label": "نوع عملیات", onchange: () => { result.replaceChildren(); } },
         h("option", { value: "" }, "همه عملیات‌ها"),
         Object.entries(MODES).map(([k, m]) => h("option", { value: k }, m.title)));

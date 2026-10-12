@@ -5,6 +5,7 @@ import { CONFIG } from "../../config/app.config.js";
 import { FIELDS, MODES } from "../../config/modes.js";
 import { isBakhsh } from "../../config/cities.js";
 import { todayJalali, parseJalali } from "../core/jalali.js";
+import { attachDatePicker } from "../core/datepicker.js";
 import { h, toLatinDigits, toPersianDigits, normalizeText, formatMoney } from "../core/utils.js";
 import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
 import { kv } from "../core/db.js";
@@ -81,6 +82,7 @@ export function createFormModule({ getUser, onEditDone }) {
       );
       photoBox.append(box);
     });
+    scheduleDraft(true);
   }
 
   // دو ورودی فایل ثابت: دوربین و گالری (ورودی جدا در DOM نگه داشته می‌شود تا روی همه مرورگرهای موبایل کار کند)
@@ -141,7 +143,7 @@ export function createFormModule({ getUser, onEditDone }) {
     if (f.type === "digits") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in" });
     // autocomplete معتبر «transaction-amount» تا مرورگر پیشنهاد رمز/نام کاربری ذخیره‌شده را برای مبلغ نشان ندهد
     else if (f.type === "money") input = h("input", { ...common, autocomplete: "transaction-amount", name: "txn-amount", "data-lpignore": "true", "data-1p-ignore": "true", type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "مثال: 1,250,000" });
-    else if (f.type === "shamsi") input = h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" });
+    else if (f.type === "shamsi") input = attachDatePicker(h("input", { ...common, type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/15" })); // فقط‌خواندنی؛ با لمس تقویم باز می‌شود
     else if (f.type === "textarea") input = h("textarea", { ...common, rows: 2, placeholder: f.placeholder || "", maxlength: 500 });
     else if (f.type === "select") {
       // لیست انتخابی (مثل «امور»)؛ اگر optionsMap دارد (مثل «شهر/بخش») گزینه‌ها بعد از انتخاب امور پر می‌شود
@@ -251,6 +253,7 @@ export function createFormModule({ getUser, onEditDone }) {
       gpsBtn.classList.remove("loading");
       gpsInfo.classList.remove("live");
       showGps();
+      scheduleDraft();
     }
   }
 
@@ -283,6 +286,129 @@ export function createFormModule({ getUser, onEditDone }) {
     modeSel.dataset.mode = key; // رنگ کلید انتخاب بر اساس نوع عملیات (CSS)
     amountLabelEl.firstChild.textContent = mode().amountLabel;
     renderPhotos();
+  }
+
+  /* ───────── پیش‌نویس خودکار (۲۴ ساعت) ─────────
+   * فرم ذخیره‌نشده (فیلدها + عکس‌های خام کوچک‌شده) در IndexedDB نگه داشته می‌شود تا با بستن/مینیمایز شدن برنامه یا
+   * رفرش شدن صفحه (مثلاً هنگام باز شدن دوربین) از بین نرود. بار بعد کاربر تصمیم می‌گیرد: ادامه یا حذف.
+   * هر کاربر پیش‌نویس خودش را دارد؛ بعد از ثبت موفق، حذف یا گذشت ۲۴ ساعت پاک می‌شود. در حالت ویرایش ذخیره نمی‌شود. */
+  const DRAFT_TTL = 24 * 3600 * 1000;
+  const dKey = (u) => `draft:${u.code}`;
+  const pKey = (u) => `draftph:${u.code}`;
+  let draftChecked = false, draftTimer = null, draftReady = false, photosDirty = false, restoring = false, saving = false, draftGen = 0;
+
+  function isDirty() {
+    if (state.photos.some(Boolean) || state.gps.lat != null) return true;
+    return FIELDS.some((f) => !f.sticky && f.key !== "date" && f.key !== "leader" && String(state.inputs[f.key].value || "").trim() !== "");
+  }
+
+  function scheduleDraft(photosChanged = false) {
+    if (photosChanged) photosDirty = true;
+    if (!draftReady || state.editing || restoring) return;
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(flushDraft, 700);
+  }
+
+  async function clearDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    draftGen++;
+    photosDirty = false;
+    const u = getUser();
+    if (!u) return;
+    try { await kv.del(dKey(u)); await kv.del(pKey(u)); } catch { /* مهم نیست */ }
+  }
+
+  async function flushDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    const u = getUser();
+    if (!u || !draftReady || state.editing || restoring || saving) return;
+    const gen = draftGen;
+    try {
+      if (!isDirty()) { await clearDraft(); return; }
+      const values = {};
+      for (const f of FIELDS) if (f.key !== "leader") values[f.key] = state.inputs[f.key].value;
+      if (photosDirty) {
+        photosDirty = false;
+        const photos = state.photos.map((p) => (p ? { blob: p.blob, width: p.width, height: p.height } : null));
+        if (gen !== draftGen) return;
+        await kv.set(pKey(u), { mode: state.mode, photos });
+      }
+      if (gen !== draftGen) return;
+      await kv.set(dKey(u), { t: Date.now(), mode: state.mode, values, gps: state.gps, n: state.photos.filter(Boolean).length });
+    } catch (e) {
+      photosDirty = true;
+      console.warn("draft", e);
+    }
+  }
+
+  function ago(ms) {
+    const m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return `${toPersianDigits(m)} دقیقه`;
+    const hh = Math.floor(m / 60), mm = m % 60;
+    return `${toPersianDigits(hh)} ساعت` + (mm ? ` و ${toPersianDigits(mm)} دقیقه` : "");
+  }
+
+  async function restoreDraft(d, pr) {
+    restoring = true;
+    try {
+      state.mode = MODES[d.mode] ? d.mode : Object.keys(MODES)[0];
+      await setMode(state.mode, true);
+      for (const f of FIELDS) {
+        if (f.key === "leader") continue;
+        const el = state.inputs[f.key];
+        const val = d.values?.[f.key] ?? "";
+        if (f.type === "select" && val && ![...el.options].some((o) => o.value === val)) continue; // مقدار قدیمی که در فهرست نیست
+        el.value = val;
+        if (f.key === cityDef.dependsOn) fillCityOptions(false);
+      }
+      if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
+      syncAbadi();
+      applyLeader();
+      state.gps = d.gps && d.gps.lat != null ? d.gps : { lat: null, lng: null, accuracy: null };
+      showGps();
+      state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
+      const okPhotos = pr && pr.mode === state.mode && Array.isArray(pr.photos);
+      state.photos = mode().photoSlots.map((_, i) => {
+        const p = okPhotos ? pr.photos[i] : null;
+        return p?.blob ? { blob: p.blob, width: p.width, height: p.height, url: URL.createObjectURL(p.blob) } : null;
+      });
+      renderPhotos();
+    } finally {
+      restoring = false;
+    }
+  }
+
+  /** یک بار بعد از باز شدن فرم: اگر پیش‌نویس معتبر هست از کاربر می‌پرسد */
+  async function checkDraft() {
+    const u = getUser();
+    try {
+      const d = u && (await kv.get(dKey(u), null));
+      if (d && Date.now() - d.t > DRAFT_TTL) { await clearDraft(); return; }
+      if (!d || d.mode == null) return;
+      const pr = await kv.get(pKey(u), null);
+      const nPhotos = pr && pr.mode === d.mode ? (pr.photos || []).filter((p) => p?.blob).length : 0;
+      const small = "font-size:.84rem;font-weight:400;line-height:1.9;margin-top:4px;color:var(--ink2)";
+      const view = h("div", { style: "text-align:center" },
+        h("div", {}, "فرم ذخیره‌نشده دارید"),
+        h("div", { style: small }, `${MODES[d.mode]?.title || ""}${d.values?.eshterak ? " — اشتراک " + toPersianDigits(d.values.eshterak) : ""}`),
+        h("div", { style: small }, `${toPersianDigits(nPhotos)} عکس — ${ago(Date.now() - d.t)} پیش`),
+        h("div", { style: small }, "ادامه می‌دهید یا پیش‌نویس حذف شود؟"));
+      let how = null;
+      while (!how) { // بستن با لمس بیرون = بدون تصمیم؛ دوباره می‌پرسیم تا پیش‌نویس ناخواسته گم نشود
+        how = await choiceBox(view, [
+          { label: "حذف پیش‌نویس", value: "drop", cls: "btn-secondary" },
+          { label: "ادامهٔ فرم", value: "restore" },
+        ]);
+      }
+      if (how === "restore") await restoreDraft(d, pr);
+      else await clearDraft();
+    } catch (e) {
+      console.warn("draft", e);
+    } finally {
+      draftReady = true;
+    }
   }
 
   /* ───────── ذخیره ───────── */
@@ -330,6 +456,7 @@ export function createFormModule({ getUser, onEditDone }) {
     }
 
     const b = busy("در حال درج اطلاعات روی عکس‌ها…");
+    saving = true; // تا پایان ذخیره، پیش‌نویس نوشته نمی‌شود
     try {
       const info = buildStampInfo({ ...v, modeTitle: mode().title, userName: state.editing?.userName || user.name, gps: state.gps });
       const picked = state.photos.filter(Boolean);
@@ -383,11 +510,13 @@ export function createFormModule({ getUser, onEditDone }) {
       if (wasEdit) {
         await endEdit();
         onEditDone?.();
-      } else resetAfterSave();
+      } else { await clearDraft(); resetAfterSave(); }
     } catch (e) {
       b.done();
       console.error(e);
       alertBox("خطا در ذخیره: " + (e.message || e), "خطا");
+    } finally {
+      saving = false;
     }
   }
 
@@ -446,6 +575,7 @@ export function createFormModule({ getUser, onEditDone }) {
     if (dirty || state.editing) {
       if (!(await confirmBox("اطلاعات نیمه‌کاره‌ی فرم فعلی پاک می‌شود. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) return false;
     }
+    await clearDraft(); // فرم نیمه‌کاره (و پیش‌نویسش) با تأیید کاربر کنار می‌رود
     state.mode = MODES[rec.mode] ? rec.mode : Object.keys(MODES)[0];
     await setMode(state.mode, true);
     for (const f of FIELDS) {
@@ -518,6 +648,12 @@ export function createFormModule({ getUser, onEditDone }) {
       state.inputs[cityDef.dependsOn].addEventListener("change", () => { fillCityOptions(false); syncAbadi(); });
       state.inputs[cityDef.key].addEventListener("change", syncAbadi);
 
+      // ذخیرهٔ خودکار پیش‌نویس با هر تغییر فیلد؛ و فوراً وقتی برنامه پنهان/بسته می‌شود
+      root.addEventListener("input", () => scheduleDraft());
+      root.addEventListener("change", () => scheduleDraft());
+      document.addEventListener("visibilitychange", () => { if (document.hidden && draftTimer) flushDraft(); });
+      window.addEventListener("pagehide", () => { if (draftTimer) flushDraft(); });
+
       // مقادیر اولیه
       const sticky = (await kv.get("sticky", {})) || {};
       for (const f of FIELDS) {
@@ -530,6 +666,7 @@ export function createFormModule({ getUser, onEditDone }) {
       await setMode(state.mode, true);
     },
     onShow() {
+      if (!draftChecked) { draftChecked = true; checkDraft(); } // بدون انتظار؛ پرسش پیش‌نویس روی فرم باز می‌شود
       if (!state.editing) applyLeader();
       // تاریخ پیش‌فرض اگر روز عوض شده یا خالی است
       if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
