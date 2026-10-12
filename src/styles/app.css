@@ -52,7 +52,7 @@ svg.ico-svg { width: 1.25em; height: 1.25em; display: block; flex: none; }
 .app-header {
   position: relative; z-index: 50; flex: none; color: #fff;
   display: grid; grid-template-columns: 68px 1fr 68px; align-items: center; gap: 4px;
-  height: calc(var(--hdr-h) + var(--safe-t)); padding: var(--safe-t) 12px 0;
+  min-height: calc(var(--hdr-h) + var(--safe-t)); padding: var(--safe-t) 12px 0;
   background:
     radial-gradient(130px 90px at 10% 0%, rgba(255, 255, 255, .20), transparent 72%),
     radial-gradient(190px 110px at 96% 105%, rgba(255, 200, 61, .22), transparent 72%),
@@ -67,10 +67,13 @@ svg.ico-svg { width: 1.25em; height: 1.25em; display: block; flex: none; }
 .hdr-side { display: flex; align-items: center; position: relative; z-index: 1; }
 .hdr-title {
   position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
-  font-weight: 700; font-size: 1.02rem; letter-spacing: -.01em; white-space: nowrap; min-width: 0;
+  font-weight: 700; font-size: 1.02rem; letter-spacing: -.01em; white-space: nowrap; min-width: 0; padding: 3px 0;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .18);
 }
-.hdr-title #appTitle { overflow: hidden; text-overflow: ellipsis; }
+.hdr-title #appTitle { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; column-gap: 6px; row-gap: 0; min-width: 0; line-height: 1.25; white-space: normal; text-align: center; }
+.hdr-app { flex: none; }
+/* نام کاربر: اگر در یک خط جا نشد، به خط دوم می‌رود و کامل نمایش داده می‌شود (بریده نمی‌شود) */
+.hdr-user { min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-weight: 700; color: #ffe07a; }
 .hdr-logo { border-radius: 9px; box-shadow: 0 2px 8px rgba(0, 0, 0, .28), 0 0 0 1.5px rgba(255, 255, 255, .55); flex: none; }
 
 /* وضعیت اینترنت — گوشهٔ راست هدر: چراغ + نوشتهٔ کوچک زیر آن */
@@ -217,28 +220,38 @@ input:disabled, select:disabled { background: #f0f3f8; color: #9aa6b9; cursor: n
 }
 .edit-banner .btn { width: auto; height: 30px; margin: 0; padding: 0 11px; font-size: .74rem; border-radius: 9px; }
 
-/* انتخاب نوع عملیات: قرص‌های سه‌ستونی */
-.mode-btns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.mode-btn {
-  display: flex; align-items: center; justify-content: center; text-align: center; min-height: 36px; padding: 3px 4px;
-  border: 1.5px solid var(--line); background: #fff; color: var(--ink2); border-radius: 12px; cursor: pointer;
-  font-weight: 700; font-size: .74rem; line-height: 1.25; transition: all .16s;
+/* انتخاب نوع عملیات: یک کلید بازشوی تمام‌عرض؛ رنگ کلید بسته به گزینهٔ انتخاب‌شده عوض می‌شود */
+.mode-wrap { display: block; }
+.mode-select {
+  display: block; width: 100%; min-height: 44px; padding: 0 14px 0 40px; border-radius: 13px; cursor: pointer;
+  font: inherit; font-weight: 700; font-size: .95rem; text-align: center; text-align-last: center; line-height: 1.2;
+  appearance: none; -webkit-appearance: none; border: 1.5px solid #93c5fd; background-color: #dbeafe; color: #1e3a8a;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23334155' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: left 14px center;
+  box-shadow: 0 3px 9px -4px rgba(15, 23, 42, .25); transition: background-color .16s, border-color .16s, color .16s;
 }
-.mode-btn:active { transform: scale(.96); }
+.mode-select:focus-visible { outline: 0; box-shadow: 0 0 0 4px rgba(13, 110, 253, .2); }
+.mode-select[data-mode="warning"] { background-color: #dbeafe; border-color: #93c5fd; color: #1e3a8a; }       /* آبی کمرنگ */
+.mode-select[data-mode="collect"] { background-color: #dcfce7; border-color: #86efac; color: #14532d; }       /* سبز کمرنگ */
+.mode-select[data-mode="cut_meter"] { background-color: #ffedd5; border-color: #fdba74; color: #7c2d12; }    /* نارنجی کمرنگ */
+.mode-select[data-mode="cut_belt"], .mode-select[data-mode="unseal"] { background-color: #fee2e2; border-color: #fca5a5; color: #7f1d1d; } /* قرمز کمرنگ */
+.mode-select[data-mode="block_account"] { background-color: #fef9c3; border-color: #fde047; color: #713f12; } /* زرد کمرنگ */
+.mode-select option[value="warning"] { background: #dbeafe; color: #1e3a8a; }
+.mode-select option[value="collect"] { background: #dcfce7; color: #14532d; }
+.mode-select option[value="cut_meter"] { background: #ffedd5; color: #7c2d12; }
+.mode-select option[value="cut_belt"], .mode-select option[value="unseal"] { background: #fee2e2; color: #7f1d1d; }
+.mode-select option[value="block_account"] { background: #fef9c3; color: #713f12; }
 /* خط‌های نازک جداکنندهٔ سه بخش فرم: عملیات ← اطلاعات ← عکس */
-#tab-form .mode-btns { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+#tab-form .mode-wrap { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 #tab-form .field-grid { margin-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 #tab-form .photos-field { margin-top: 7px; }
-.mode-btn.active {
-  background: linear-gradient(135deg, #2f86ff, #0a53c8); border-color: transparent; color: #fff;
-  box-shadow: 0 6px 14px -5px rgba(13, 110, 253, .65), inset 0 1px 0 rgba(255, 255, 255, .25);
-}
+.field-grid .field.is-auto { display: none; } /* سرگروه: خودکار از نام کاربر، نمایش داده نمی‌شود */
 
 /* فیلدها: برچسب کوچک داخل کادر (floating) */
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 7px; margin-top: 9px; }
 .field-grid .field { position: relative; margin-top: 0; min-width: 0; }
 .field.wide { grid-column: 1 / -1; order: 2; }
-.field-grid > .gps-field { order: 1; }
+.field-grid > .gps-field { order: 1; grid-column: 1 / -1; }
 .field-grid .field > label {
   position: absolute; top: 5px; inset-inline-start: 12px; z-index: 1; margin: 0; pointer-events: none;
   font-size: .64rem; font-weight: 700; color: var(--ink3); line-height: 1.2; max-width: calc(100% - 24px);
@@ -540,7 +553,7 @@ option { color: var(--ink); }
   .container { padding-top: 9px; padding-bottom: 9px; }
   .app-header { border-radius: 0 0 20px 20px; }
   .nav-ico { height: 27px; }
-  .mode-btn { min-height: 33px; }
+  .mode-select { min-height: 40px; }
   .photos-field { min-height: 84px; }
   .card { padding: 12px; }
   #tab-form > .card, #tab-archive > .card { padding: 10px; }
@@ -550,9 +563,9 @@ option { color: var(--ink); }
   .container { padding-top: 7px; padding-bottom: 7px; }
   .nav-lbl { font-size: .66rem; }
   .nav-ico { height: 24px; width: 46px; }
-  .mode-btn { min-height: 30px; font-size: .7rem; }
+  .mode-select { min-height: 38px; font-size: .88rem; }
   .field-grid { gap: 5px; }
-  #tab-form .mode-btns { padding-bottom: 6px; }
+  #tab-form .mode-wrap { padding-bottom: 6px; }
   #tab-form .field-grid { margin-top: 6px; padding-bottom: 6px; }
   #tab-form .photos-field { margin-top: 5px; }
   .field-grid .field > input[type=text], .field-grid .field > select, .field-grid .field > textarea { padding-top: 15px; font-size: .86rem; }
@@ -565,7 +578,7 @@ option { color: var(--ink); }
 }
 @media (max-height: 600px) {
   :root { --fh: 38px; }
-  .mode-btn { min-height: 28px; }
+  .mode-select { min-height: 36px; }
   .photos-field { min-height: 60px; }
   .photo-label span { display: none; }
 }
@@ -573,7 +586,7 @@ option { color: var(--ink); }
 @media (min-height: 800px) {
   :root { --fh: 50px; --nav-h: 64px; }
   .photos-field { max-height: 250px; }
-  .mode-btn { min-height: 40px; font-size: .78rem; }
-  .field-grid, .mode-btns { gap: 8px; }
+  .mode-select { min-height: 46px; }
+  .field-grid { gap: 8px; }
 }
-@media (max-width: 340px) { .mode-btn { font-size: .66rem; } .nav-lbl { font-size: .64rem; } }
+@media (max-width: 340px) { .nav-lbl { font-size: .64rem; } }
