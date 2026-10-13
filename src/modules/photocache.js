@@ -28,8 +28,24 @@ function open() {
 const wrap = (req) => new Promise((resolve) => { req.onsuccess = () => resolve(req.result); req.onerror = () => resolve(undefined); });
 const txDone = (tx) => new Promise((resolve) => { tx.oncomplete = () => resolve(true); tx.onerror = tx.onabort = () => resolve(false); });
 
-/** شناسه‌ها → Map(id → Uint8Array) برای عکس‌هایی که در کش هستند */
-export async function getCached(ids) {
+/**
+ * فقط «وجود» شناسه‌ها در کش را می‌سنجد (خودِ عکس‌ها خوانده نمی‌شوند → سبک و سریع، RAM مصرف نمی‌شود).
+ * سن عکس مهم نیست: عکس Drive تغییر نمی‌کند و پاک‌سازی قدیمی‌ها هنگام ذخیره انجام می‌شود.
+ */
+export async function cachedIds(ids) {
+  const out = new Set();
+  try {
+    const db = await open();
+    if (!db || !ids.length) return out;
+    const store = db.transaction(STORE, "readonly").objectStore(STORE);
+    const keys = await Promise.all(ids.map((id) => wrap(store.getKey(id))));
+    keys.forEach((k) => { if (k !== undefined) out.add(k); });
+  } catch { /* کش خالی */ }
+  return out;
+}
+
+/** شناسه‌ها → Map(id → Uint8Array) برای عکس‌هایی که در کش هستند؛ anyAge=true: بدون بررسی سن (هماهنگ با cachedIds) */
+export async function getCached(ids, { anyAge = false } = {}) {
   const out = new Map();
   try {
     const db = await open();
@@ -37,7 +53,7 @@ export async function getCached(ids) {
     const store = db.transaction(STORE, "readonly").objectStore(STORE);
     const now = Date.now();
     const rows = await Promise.all(ids.map((id) => wrap(store.get(id))));
-    rows.forEach((r) => { if (r && r.bytes && now - r.t < MAX_AGE_MS) out.set(r.id, r.bytes); });
+    rows.forEach((r) => { if (r && r.bytes && (anyAge || now - r.t < MAX_AGE_MS)) out.set(r.id, r.bytes); });
   } catch { /* کش خالی */ }
   return out;
 }

@@ -17,7 +17,7 @@ import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
 import { splitTotals, summarize } from "./records.js";
 import { ICONS } from "../core/icons.js";
-import { getCached, putCached, clearCache, cacheCount } from "./photocache.js";
+import { getCached, cachedIds, putCached, clearCache, cacheCount } from "./photocache.js";
 
 /** کلیدهای مرتب‌سازی — پیش‌فرض: امور */
 const SORT_KEYS = [
@@ -45,6 +45,52 @@ function sortRecords(list, key) {
     default:
       return arr.sort((a, b) => cmp(a.omoor, b.omoor) || cmp(a.date, b.date) || cmp(a.userCode, b.userCode));
   }
+}
+
+/**
+ * هم‌زمانی تطبیقی دریافت عکس‌ها: با `start` درخواست هم‌زمان شروع می‌کند و تا `max` بالا می‌رود
+ * مادامی که «سرعت کل» (بایت بر ثانیه) با هر پله دست‌کم ۱۰٪ بهتر شود؛ وقتی بهتر نشد (اینترنت یا سرور اشباع شد)
+ * به پلهٔ قبل برمی‌گردد و ثابت می‌ماند. با خطای سرور یا فشار (کند شدن عکس‌ها) یک پله کم می‌کند و دیگر بالا نمی‌رود.
+ */
+function createAdaptivePool({ start = 4, min = 2, max = 6, gain = 1.1 } = {}) {
+  let limit = start, peak = 0, active = 0, settled = false, prevTp = 0, marks = [];
+  const waiters = [];
+  const grant = () => { while (waiters.length && active < limit) { active++; peak = Math.max(peak, active); waiters.shift()(); } };
+  return {
+    max,
+    get limit() { return limit; },
+    get peak() { return peak; },
+    /** شروع یک بخش (ZIP) تازه: نمونه‌های سرعت قبلی دور ریخته می‌شود (فاصلهٔ بین بخش‌ها سرعت را خراب می‌کند) */
+    rest() { marks = []; },
+    acquire() { return new Promise((resolve) => { waiters.push(resolve); grant(); }); },
+    /** پایان یک درخواست؛ info = { ok, bytes, pressure } یا null (درخواستی انجام نشد) */
+    done(info) {
+      active--;
+      if (info) this._report(info);
+      grant();
+    },
+    _report({ ok, bytes, pressure }) {
+      const t = performance.now();
+      if (!ok || pressure) { // خطا یا فشار روی سرور: یک پله کمتر و دیگر بالا نرو
+        if (limit > min) limit--;
+        settled = true; marks = [];
+        return;
+      }
+      if (settled) return;
+      marks.push({ t, bytes });
+      if (marks.length < limit + 1) return; // برای سنجش سرعت این پله، به‌اندازهٔ یک «دور» تکمیل لازم است
+      const dt = (marks[marks.length - 1].t - marks[0].t) / 1000;
+      const tp = dt > 0 ? marks.slice(1).reduce((a, m) => a + m.bytes, 0) / dt : 0;
+      if (!prevTp || tp >= prevTp * gain) {
+        prevTp = tp;
+        if (limit < max) { limit++; marks = [{ t, bytes: 0 }]; }
+        else settled = true;
+      } else { // پلهٔ آخر فایده نداشت
+        limit = Math.max(min, limit - 1);
+        settled = true;
+      }
+    },
+  };
 }
 
 export function createAdminModule({ getUser }) {
@@ -110,6 +156,8 @@ export function createAdminModule({ getUser }) {
       progress: b.progress,
       /** ثبت زمان مرحله‌ای که تمام شد (نام فارسی کوتاه) */
       mark(name) { marks.push([name, Date.now() - tm]); tm = Date.now(); },
+      /** ثبت زمان کاری که هم‌زمان با مرحلهٔ دیگری انجام شده (مرجع زمان مرحله‌ها را جابه‌جا نمی‌کند) */
+      add(name, ms) { marks.push([name, ms]); },
       t00, marks, srvMs: () => srvMs,
       /** جمع زمان اجرای خود سرور (فیلد ms پاسخ‌ها) */
       srv(res) { if (res && Number.isFinite(res.ms)) srvMs += res.ms; },
@@ -544,7 +592,7 @@ export function createAdminModule({ getUser }) {
     return { p, lines };
   }
 
-  const PHOTO_WORKERS = 3; // تعداد درخواست هم‌زمان عکس
+  const POOL = { start: 4, min: 2, max: 6 }; // درخواست هم‌زمان عکس (تطبیقی؛ createAdaptivePool)
   const FATAL = /آفلاین|رمز ادمین|ADMIN_KEY|توکن/;
 
   /**
@@ -607,14 +655,14 @@ export function createAdminModule({ getUser }) {
 
       // عکس‌هایی که قبلاً روی همین دستگاه دانلود شده‌اند دوباره از سرور گرفته نمی‌شوند
       stage = "بررسی حافظهٔ دستگاه";
-      const cached = await getCached([...new Set(items.map((it) => it.id))]);
-      const nNeed = items.filter((it) => !cached.has(it.id)).length;
+      const cachedSet = await cachedIds([...new Set(items.map((it) => it.id))]); // فقط وجود؛ خود عکس‌ها بخش‌به‌بخش خوانده می‌شوند (RAM کمتر)
+      const nNeed = items.filter((it) => !cachedSet.has(it.id)).length;
 
       if (items.length > 80 || nParts > 1) {
         const prevJob = j;
         j.done();
         const mb = Math.round(nNeed * 0.15);
-        const msg = `${toPersianDigits(items.length)} عکس` + (cached.size ? ` (${toPersianDigits(items.filter((it) => cached.has(it.id)).length)} عدد از قبل روی همین دستگاه است)` : "") +
+        const msg = `${toPersianDigits(items.length)} عکس` + (cachedSet.size ? ` (${toPersianDigits(items.filter((it) => cachedSet.has(it.id)).length)} عدد از قبل روی همین دستگاه است)` : "") +
           `؛ حدود ${toPersianDigits(mb)} مگابایت باید دانلود شود.` +
           (nParts > 1 ? `\nعکس‌ها در ${toPersianDigits(nParts)} فایل ZIP پشت‌سرهم ذخیره می‌شوند؛ اگر مرورگر دربارهٔ «دانلودهای چندگانه» پرسید، اجازه دهید.` : "") +
           "\nاینترنت پایدار لازم است و صفحه را نبندید. ادامه؟";
@@ -631,7 +679,7 @@ export function createAdminModule({ getUser }) {
       // مرحلهٔ تأیید: شناسه‌ها یک‌بار با شیت سنجیده می‌شوند (سرور جدید)؛ سرور قدیمی → روش قبلی
       stage = "تأیید عکس‌ها در سرور";
       let sigs = null, perCall = OLD_BATCH;
-      const needIds = [...new Set(items.filter((it) => !cached.has(it.id)).map((it) => it.id))];
+      const needIds = [...new Set(items.filter((it) => !cachedSet.has(it.id)).map((it) => it.id))];
       if (needIds.length) {
         const sres = await serverCall("signPhotos", { ...pick(filters), fileIds: needIds });
         j.srv(sres);
@@ -643,16 +691,32 @@ export function createAdminModule({ getUser }) {
 
       const dlName = (k) => (nParts > 1 ? `${root}_بخش-${toPersianDigits(k + 1)}-از-${toPersianDigits(nParts)}.zip` : `${root}.zip`);
       let doneN = 0, gotN = 0, fromCache = 0, failN = 0, fast = 0, fatal = "", lastErr = "", streak = 0;
+      let netBytes = 0, netOk = 0, netTried = 0, netMs = 0, lastSaveAt = 0; // آمار دریافت از سرور (برای سرعت و زمان باقی‌مانده)
       const saved = [];
       const pending = [];
+      const pool = createAdaptivePool(POOL);
+      const mbs = (x) => toPersianDigits(x.toFixed(1)).replace(".", "٫");
+      const etaText = (sec) => (sec < 90 ? `${toPersianDigits(Math.max(5, Math.round(sec / 5) * 5))} ثانیه` : `${toPersianDigits(Math.round(sec / 60))} دقیقه`);
 
-      for (let k = 0; k < nParts; k++) {
+      /** دریافت یک بخش: عکس‌های کش‌شدهٔ همین بخش از حافظه + بقیه از سرور؛ → { entries, tag } */
+      const fetchPart = async (k) => {
         const part = items.slice(k * PART_SIZE, (k + 1) * PART_SIZE);
         const tag = nParts > 1 ? `بخش ${toPersianDigits(k + 1)} از ${toPersianDigits(nParts)} — ` : "";
         const entries = k === 0 ? [excel] : [];
+
+        // فقط عکس‌های کش‌شدهٔ همین بخش وارد حافظه می‌شوند (نه کل ۱۵۰۰ عکس یک‌جا)
+        const inCache = [...new Set(part.filter((it) => cachedSet.has(it.id)).map((it) => it.id))];
+        const partCache = inCache.length ? await getCached(inCache, { anyAge: true }) : new Map();
+        const lost = inCache.filter((id) => !partCache.has(id)); // وسط کار از کش پاک شده؛ نادر
+        if (lost.length && signed) {
+          const s2 = await serverCall("signPhotos", { ...pick(filters), fileIds: lost });
+          j.srv(s2);
+          if (s2.ok && s2.sigs) Object.assign(sigs, s2.sigs);
+        }
+
         const need = [];
         for (const it of part) {
-          const c = cached.get(it.id);
+          const c = partCache.get(it.id);
           if (c) { entries.push({ name: it.path, data: c }); gotN++; fromCache++; doneN++; }
           else if (signed && !sigs[it.id]) { failN++; doneN++; lastErr = lastErr || "عکس در شیت ثبت نشده است"; }
           else need.push(it);
@@ -660,66 +724,111 @@ export function createAdminModule({ getUser }) {
 
         stage = "دریافت عکس‌ها";
         j.step(3, `${tag}دریافت عکس‌ها: ${toPersianDigits(doneN)} از ${toPersianDigits(items.length)}`);
+        j.progress(Math.min(doneN, items.length) / items.length);
         const byId = new Map();
         for (const it of need) { if (!byId.has(it.id)) byId.set(it.id, []); byId.get(it.id).push(it); }
         const uniq = [...byId.keys()];
         const batches = [];
         for (let i = 0; i < uniq.length; i += perCall) batches.push(uniq.slice(i, i + perCall));
         let next = 0;
+        const tPhase = Date.now();
+        const speedLine = () => {
+          const secs = (netMs + Date.now() - tPhase) / 1000;
+          if (secs < 3 || netBytes <= 0 || netOk < 2) return "";
+          const rate = netBytes / secs;                       // بایت بر ثانیه
+          const left = Math.max(0, needIds.length - netTried); // عکس‌های باقی‌مانده برای دریافت
+          const eta = (left * (netBytes / netOk)) / rate;
+          return `\nسرعت ${mbs(rate / 1048576)} مگابایت بر ثانیه` + (left ? ` — حدود ${etaText(eta)} مانده` : "");
+        };
+        pool.rest();
         const worker = async () => {
-          while (!fatal) {
-            const bi = next++;
-            if (bi >= batches.length) return;
-            const ids = batches[bi];
+          for (;;) {
+            await pool.acquire();
+            if (fatal || next >= batches.length) { pool.done(null); return; }
+            const ids = batches[next++];
             const files = ids.map((id) => ({ id, ...(signed ? { sig: sigs[id] } : {}) }));
-            const res = await getBatch(j, filters, files, signed);
             const count = ids.reduce((t, id) => t + byId.get(id).length, 0);
-            if (res.ok) {
-              streak = 0;
-              fast += res.fast || 0;
-              const toCache = [];
-              const have = new Set();
-              for (const ph of res.photos || []) {
-                const list = byId.get(ph.id);
-                if (!list) continue;
-                const bytes = b64ToBytes(ph.data);
-                have.add(ph.id);
-                list.forEach((it) => { entries.push({ name: it.path, data: bytes }); gotN++; });
-                toCache.push({ id: ph.id, bytes });
+            let info = null;
+            try {
+              const res = await getBatch(j, filters, files, signed);
+              let bytesIn = 0;
+              if (res.ok) {
+                streak = 0;
+                fast += res.fast || 0;
+                const toCache = [];
+                const have = new Set();
+                for (const ph of res.photos || []) {
+                  const list = byId.get(ph.id);
+                  if (!list) continue;
+                  const bytes = b64ToBytes(ph.data);
+                  bytesIn += bytes.length;
+                  have.add(ph.id);
+                  list.forEach((it) => { entries.push({ name: it.path, data: bytes }); gotN++; });
+                  toCache.push({ id: ph.id, bytes });
+                }
+                ids.forEach((id) => { if (!have.has(id)) failN += byId.get(id).length; });
+                netBytes += bytesIn; netOk += have.size;
+                if (res.error) lastErr = res.error;
+                if (toCache.length) pending.push(putCached(toCache));
+                // «فشار» = سرور بخشی از عکس‌ها را با روش کند (DriveApp) خوانده؛ نشانهٔ محدودیت سرعت گوگل
+                info = { ok: true, bytes: bytesIn, pressure: signed && res.fast > 0 && res.fast < ids.length * 0.7 };
+              } else {
+                failN += count;
+                lastErr = res.error || lastErr;
+                if (FATAL.test(String(res.error))) fatal = res.error;
+                else if (++streak >= 4) fatal = "سرور چند بار پشت‌سرهم پاسخ نداد: " + String(res.error || "");
+                info = { ok: false, bytes: 0, pressure: true };
               }
-              ids.forEach((id) => { if (!have.has(id)) failN += byId.get(id).length; });
-              if (res.error) lastErr = res.error;
-              if (toCache.length) pending.push(putCached(toCache));
-            } else {
-              failN += count;
-              lastErr = res.error || lastErr;
-              if (FATAL.test(String(res.error))) fatal = res.error;
-              else if (++streak >= 4) fatal = "سرور چند بار پشت‌سرهم پاسخ نداد: " + String(res.error || "");
+            } finally {
+              pool.done(info);
             }
+            netTried += ids.length;
             doneN += count;
-            j.detail(`${tag}دریافت عکس‌ها: ${toPersianDigits(Math.min(doneN, items.length))} از ${toPersianDigits(items.length)}` + (failN ? `\n(${toPersianDigits(failN)} عکس دریافت نشد)` : ""));
+            j.detail(`${tag}دریافت عکس‌ها: ${toPersianDigits(Math.min(doneN, items.length))} از ${toPersianDigits(items.length)}` + (failN ? `\n(${toPersianDigits(failN)} عکس دریافت نشد)` : "") + speedLine());
             j.progress(Math.min(doneN, items.length) / items.length);
           }
         };
-        await Promise.all(Array.from({ length: Math.min(PHOTO_WORKERS, batches.length) }, worker));
+        await Promise.all(Array.from({ length: Math.min(pool.max, batches.length) }, worker));
+        netMs += Date.now() - tPhase;
         j.mark(`عکس‌ها${nParts > 1 ? " " + toPersianDigits(k + 1) : ""}`);
+        return { entries, tag };
+      };
 
-        const photosInPart = entries.length - (k === 0 ? 1 : 0);
-        if (!photosInPart) { if (fatal) break; continue; } // این بخش عکسی نیاورد: ZIP خالی ساخته نمی‌شود
+      /** ساخت ZIP و ذخیرهٔ یک بخش؛ برای بخش‌های میانی هم‌زمان با دریافت بخش بعدی اجرا می‌شود */
+      const finishPart = async (k, { entries, tag }) => {
+        let st = "ساخت فایل ZIP";
+        try {
+          const photosInPart = entries.length - (k === 0 ? 1 : 0);
+          if (!photosInPart) return; // این بخش عکسی نیاورد: ZIP خالی ساخته نمی‌شود
+          const last = k === nParts - 1;
+          if (last) { stage = st; j.step(4, `${tag}ساخت فایل ZIP (${toPersianDigits(photosInPart)} عکس${k === 0 ? " + Excel" : ""})…`); }
+          await sleep(0);
+          const tz = Date.now();
+          const zip = await createZip(entries);
+          j.add(`ZIP${nParts > 1 ? " " + toPersianDigits(k + 1) : ""}`, Date.now() - tz);
+          st = "ذخیره فایل";
+          if (last) { stage = st; j.step(5, `${tag}ذخیرهٔ فایل روی دستگاه…`); }
+          const gap = lastSaveAt + 900 - Date.now(); // فاصله تا مرورگر دانلودهای پشت‌سرهم را بپذیرد
+          if (lastSaveAt && gap > 0) await sleep(gap);
+          downloadBlob(zip, dlName(k));
+          lastSaveAt = Date.now();
+          saved.push(dlName(k));
+        } catch (e) {
+          if (e && typeof e === "object") e.stage = e.stage || st;
+          throw e;
+        }
+      };
 
-        stage = "ساخت فایل ZIP";
-        j.step(4, `${tag}ساخت فایل ZIP (${toPersianDigits(photosInPart)} عکس${k === 0 ? " + Excel" : ""})…`);
-        await sleep(0);
-        const zip = await createZip(entries);
-        j.mark(`ZIP${nParts > 1 ? " " + toPersianDigits(k + 1) : ""}`);
-
-        stage = "ذخیره فایل";
-        j.step(5, `${tag}ذخیرهٔ فایل روی دستگاه…`);
-        downloadBlob(zip, dlName(k));
-        saved.push(dlName(k));
-        if (k < nParts - 1 && !fatal) await sleep(900); // فاصله تا مرورگر دانلودها را پشت‌سرهم بپذیرد
+      // بخش بعدی دریافت می‌شود در حالی که ZIP/ذخیرهٔ بخش قبلی در حال انجام است (حداکثر دو بخش هم‌زمان در حافظه)
+      let prevFinish = null;
+      for (let k = 0; k < nParts; k++) {
+        const got = await fetchPart(k);
+        if (prevFinish) await prevFinish;
+        prevFinish = finishPart(k, got);
+        prevFinish.catch(() => {}); // خطا هنگام await بعدی به catch اصلی می‌رسد
         if (fatal) break;
       }
+      if (prevFinish) await prevFinish;
       await Promise.all(pending);
       j.done();
 
@@ -730,12 +839,13 @@ export function createAdminModule({ getUser }) {
       failN = items.length - gotN; // شامل بخش‌هایی که به‌خاطر خطای قطعی اصلاً شروع نشدند
       const cacheNote = fromCache ? ` — ${toPersianDigits(fromCache)} عکس از حافظهٔ دستگاه` : "";
       const modeNote = !needIds.length ? "" : signed ? (fast ? " — دریافت سریع" : "") : " — روش قدیمی (اسکریپت سرور را به‌روز کنید)";
-      showSummary(j, `ذخیره شد: ${saved.join(" ، ")} — ${toPersianDigits(gotN)} عکس + Excel${cacheNote}${modeNote}` + (failN ? ` (${toPersianDigits(failN)} عکس دریافت نشد؛ دوباره امتحان کنید)` : ""));
+      const speedNote = netBytes > 0 && netMs > 0 ? ` — از سرور ${mbs(netBytes / 1048576)} مگابایت با سرعت ${mbs(netBytes / 1048576 / (netMs / 1000))} مگابایت بر ثانیه (تا ${toPersianDigits(pool.peak)} درخواست هم‌زمان)` : "";
+      showSummary(j, `ذخیره شد: ${saved.join(" ، ")} — ${toPersianDigits(gotN)} عکس + Excel${cacheNote}${modeNote}${speedNote}` + (failN ? ` (${toPersianDigits(failN)} عکس دریافت نشد؛ دوباره امتحان کنید)` : ""));
       if (failN) {
         const x = explain({ error: fatal || lastErr });
         await alertBox(`ZIP ذخیره شد، اما ${toPersianDigits(failN)} عکس از ${toPersianDigits(items.length)} عکس دریافت نشد.\n\n` + (fatal || lastErr ? `علت: ${x.why}\nراه‌حل: ${x.tip}\n\nجزئیات فنی: ${x.raw}` : "علت: فایل آن عکس‌ها در Drive پیدا نشد یا دسترسی نداشت.") + "\n\nدوباره همین دانلود را بزنید؛ عکس‌های گرفته‌شده از حافظهٔ دستگاه می‌آیند و فقط عکس‌های ناموفق دوباره از سرور گرفته می‌شوند.", "ZIP ناقص ذخیره شد");
       } else toast(`${nParts > 1 ? "ZIPها" : "ZIP"} ذخیره شد — ${toPersianDigits(gotN)} عکس`, "success");
-    } catch (e) { await failBuild(j, stage, e); } finally { j.done(); }
+    } catch (e) { await failBuild(j, (e && e.stage) || stage, e); } finally { j.done(); }
   }
 
   async function clearPhotoCache() {
