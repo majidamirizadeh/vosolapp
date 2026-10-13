@@ -135,6 +135,6 @@ export async function createXlsx(sheets) {
     { name: "xl/styles.xml", data: STYLES },
     ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(s) })),
   ];
-  const zip = await createZip(entries);
+  const zip = await createZip(entries, { compress: true }); // deflate (خودکار به Store برمی‌گردد اگر مرورگر پشتیبانی نکند)
   return new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }

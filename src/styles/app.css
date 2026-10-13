@@ -626,3 +626,11 @@ input.dp-input:disabled { cursor: not-allowed; }
 .dp-year { height: 46px; }
 .dp-foot { display: flex; gap: 8px; margin-top: 12px; }
 .dp-foot .btn { margin: 0; flex: 1; height: 44px; }
+
+/* گزارش خلاصهٔ ادمین: کارت هر گروه (امور / شهر-بخش / سرگروه) */
+.grp-card { border: 1px solid var(--line2); border-radius: 12px; padding: 8px 10px; margin: 8px 0; background: #fff; }
+.grp-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.grp-head b { color: var(--brand-dd); font-size: .92rem; }
+.grp-head .muted { font-size: .72rem; }
+.grp-count { margin-inline-start: auto; font-size: .78rem; font-weight: 700; color: var(--brand-d); }
+.grp-foot { font-size: .74rem; margin-top: 4px; }

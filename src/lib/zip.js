@@ -1,5 +1,7 @@
 /**
- * ساخت فایل ZIP (روش Store، بدون فشرده‌سازی — مناسب JPEG/XLSX) — کاملاً آفلاین.
+ * ساخت فایل ZIP (پیش‌فرض: روش Store بدون فشرده‌سازی — مناسب JPEG) — کاملاً آفلاین.
+ * گزینهٔ compress:true → فشرده‌سازی deflate با CompressionStream مرورگر (مناسب XML/XLSX)؛
+ * اگر مرورگر پشتیبانی نکند یا خطایی رخ دهد، همان روش Store قبلی به‌طور خودکار استفاده می‌شود.
  * ورودی: [{ name: "پوشه/فایل.jpg", data: Blob | Uint8Array | string }]
  * نام‌ها با UTF-8 ذخیره می‌شوند (فارسی هم درست باز می‌شود).
  */
@@ -26,13 +28,20 @@ async function toBytes(data) {
   throw new TypeError("نوع داده ZIP نامعتبر است");
 }
 
+async function deflateRaw(bytes) {
+  const cs = new CompressionStream("deflate-raw");
+  const stream = new Blob([bytes]).stream().pipeThrough(cs);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
 function dosDateTime(d) {
   const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
   const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
   return { time, date };
 }
 
-export async function createZip(entries, { onProgress } = {}) {
+export async function createZip(entries, { onProgress, compress = false } = {}) {
+  const canDeflate = compress && typeof CompressionStream === "function" && typeof Response === "function";
   const enc = new TextEncoder();
   const parts = [];
   const central = [];
@@ -57,37 +66,44 @@ export async function createZip(entries, { onProgress } = {}) {
     const nameBytes = enc.encode(name);
     const bytes = await toBytes(e.data);
     const crc = crc32(bytes);
+    let body = bytes, method = 0;
+    if (canDeflate && bytes.length > 64) {
+      try {
+        const z = await deflateRaw(bytes);
+        if (z.length < bytes.length) { body = z; method = 8; }
+      } catch { /* بدون فشرده‌سازی ادامه می‌دهیم */ }
+    }
 
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true);
     local.setUint16(6, 0x0800, true); // UTF-8
-    local.setUint16(8, 0, true);      // store
+    local.setUint16(8, method, true); // 0 = store ، 8 = deflate
     local.setUint16(10, now.time, true);
     local.setUint16(12, now.date, true);
     local.setUint32(14, crc, true);
-    local.setUint32(18, bytes.length, true);
+    local.setUint32(18, body.length, true);
     local.setUint32(22, bytes.length, true);
     local.setUint16(26, nameBytes.length, true);
     local.setUint16(28, 0, true);
-    parts.push(local.buffer, nameBytes, bytes);
+    parts.push(local.buffer, nameBytes, body);
 
     const cd = new DataView(new ArrayBuffer(46));
     cd.setUint32(0, 0x02014b50, true);
     cd.setUint16(4, 20, true);
     cd.setUint16(6, 20, true);
     cd.setUint16(8, 0x0800, true);
-    cd.setUint16(10, 0, true);
+    cd.setUint16(10, method, true);
     cd.setUint16(12, now.time, true);
     cd.setUint16(14, now.date, true);
     cd.setUint32(16, crc, true);
-    cd.setUint32(20, bytes.length, true);
+    cd.setUint32(20, body.length, true);
     cd.setUint32(24, bytes.length, true);
     cd.setUint16(28, nameBytes.length, true);
     cd.setUint32(42, offset, true);
     central.push(cd.buffer, nameBytes);
 
-    offset += 30 + nameBytes.length + bytes.length;
+    offset += 30 + nameBytes.length + body.length;
     onProgress?.((i + 1) / entries.length);
   }
 

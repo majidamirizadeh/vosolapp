@@ -24,6 +24,12 @@
  *  ✔ این اکشن‌ها علاوه بر APP_TOKEN، «ADMIN_KEY» هم می‌خواهند (باید با رمز ورود ادمین یکی باشد)
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
  *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
+ *
+ * نسخه ۴.۴ — گزارش سریع:
+ *  ✔ groupReport       خلاصهٔ ۶ عملیات برای کل و به تفکیک امور / شهر-بخش / سرگروه در «یک» عبور روی شیت (بدون ساخت ردیف‌ها)؛
+ *                      قانون اشتراک تکراری مثل برنامه: مبلغ «وصول» اول، بعد بزرگ‌ترین مبلغ. پاسخ فقط چند کیلوبایت است
+ *                      → PDF خلاصه و گزارش نمایشی ادمین
+ *  ✔ listRecords       (برای Excel/ZIP) سریع‌تر: ستون‌های لینک عکس وقتی لازم نیست خوانده نمی‌شوند و فرمت تاریخ سریع‌تر است
  */
 
 // ============ تنظیمات (حتماً تغییر دهید) ============
@@ -38,6 +44,7 @@ const SETTINGS = {
   // رمز ادمین: باید دقیقاً با "pass" کاربر ادمین در config/users.json یکی باشد.
   // (چون APP_TOKEN داخل برنامه‌ی همه اکیپ‌ها هست، اکشن‌های گزارش بدون این رمز کار نمی‌کنند.)
   ADMIN_KEY: "admin1405",
+  COLLECT_TITLE: "وصول مطالبات", // باید دقیقاً با MODES.collect.title در config/modes.js یکی باشد (اولویت مبلغ در اشتراک تکراری)
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
   PHOTOS_PER_CALL: 20,      // حداکثر تعداد عکس در هر درخواست getPhotos (عکس‌ها هم‌زمان خوانده می‌شوند)
   MAX_BATCH: 5,             // حداکثر تعداد رکورد در هر درخواست submitBatch
@@ -62,7 +69,7 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 43, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 44, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -297,6 +304,7 @@ const ADMIN_ACTIONS_ = {
   getSummary: getSummary_,
   getPhotos: getPhotos_,
   signPhotos: signPhotos_,
+  groupReport: groupReport_,
 };
 
 function checkAdmin_(data) {
@@ -315,14 +323,36 @@ function latin_(v) {
 function normText_(v) {
   return latin_(v).replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/\u200c/g, " ").replace(/\s+/g, " ").trim();
 }
+/**
+ * قالب‌دهی تاریخ؛ Utilities.formatDate برای هزاران ردیف کند است، پس روش مستقیم (getFullYear و …) به‌کار می‌رود.
+ * ۵ بار اول نتیجهٔ دو روش مقایسه می‌شود؛ اگر هر بار یکی نبود (منطقهٔ زمانی متفاوت) همیشه روش رسمی می‌ماند.
+ */
+const FMT_ = { tz: null, ok: {}, n: {} };
+function fmtDate_(d, pat) {
+  if (!FMT_.tz) FMT_.tz = Session.getScriptTimeZone();
+  if (FMT_.ok[pat] === false) return Utilities.formatDate(d, FMT_.tz, pat);
+  const p2 = function (n) { return (n < 10 ? "0" : "") + n; };
+  let fast;
+  if (pat === "yyyy/MM/dd") fast = d.getFullYear() + "/" + p2(d.getMonth() + 1) + "/" + p2(d.getDate());
+  else if (pat === "yyyy-MM-dd HH:mm:ss") fast = d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  else return Utilities.formatDate(d, FMT_.tz, pat);
+  if ((FMT_.n[pat] || 0) < 5) {
+    FMT_.n[pat] = (FMT_.n[pat] || 0) + 1;
+    const slow = Utilities.formatDate(d, FMT_.tz, pat);
+    if (slow !== fast) { FMT_.ok[pat] = false; return slow; }
+    return slow;
+  }
+  return fast;
+}
+
 /** کلید عددی تاریخ شمسی: 1405/07/15 → 14050715 (نامعتبر = 0) */
 function dateKey_(v) {
-  if (v instanceof Date) v = Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy/MM/dd");
+  if (v instanceof Date) v = fmtDate_(v, "yyyy/MM/dd");
   const m = latin_(v).match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   return m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : 0;
 }
 function dateText_(v) {
-  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy/MM/dd");
+  if (v instanceof Date) return fmtDate_(v, "yyyy/MM/dd");
   return latin_(v);
 }
 /** کد اکیپ: «05» و ۵ یکی حساب شوند */
@@ -341,7 +371,7 @@ function rowToRecord_(row, noLinks) {
   if (!noLinks) for (let i = 17; i <= 20; i++) if (row[i]) links.push(String(row[i])); // noLinks=true → پاسخ سبک‌تر و سریع‌تر
   const t = row[0];
   return {
-    serverTime: t instanceof Date ? Utilities.formatDate(t, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss") : String(t || ""),
+    serverTime: t instanceof Date ? fmtDate_(t, "yyyy-MM-dd HH:mm:ss") : String(t || ""),
     uid: String(row[1] || ""),
     userCode: code2_(row[2]),
     userName: String(row[3] || ""),
@@ -364,8 +394,27 @@ function rowToRecord_(row, noLinks) {
   };
 }
 
-/** خواندن و فیلتر ردیف‌ها؛ جدیدترین اول */
-function filterRecords_(data, noLinks) {
+/**
+ * خواندن بلوک ردیف‌ها از شیت:
+ *  "all" = همهٔ ستون‌ها | "nolinks" = بدون ۴ ستون لینک عکس (سبک‌تر؛ برای Excel) | "agg" = فقط ۱۱ ستون اول (برای جمع‌ها)
+ */
+function readBlock_(sheet, startRow, count, mode) {
+  if (mode === "agg") return sheet.getRange(startRow, 1, count, 11).getValues();
+  if (mode === "nolinks") {
+    const a = sheet.getRange(startRow, 1, count, 17).getValues();
+    const b = sheet.getRange(startRow, 22, count, HEADERS.length - 21).getValues();
+    for (let i = 0; i < count; i++) {
+      const row = a[i];
+      row.push("", "", "", ""); // جای خالی ستون‌های ۱۸ تا ۲۱ (لینک‌ها) تا اندیس ستون‌های بعدی همان بماند
+      for (let k = 0; k < b[i].length; k++) row.push(b[i][k]);
+    }
+    return a;
+  }
+  return sheet.getRange(startRow, 1, count, HEADERS.length).getValues();
+}
+
+/** خواندن و فیلتر ردیف‌های خام؛ جدیدترین اول (mode: روش خواندن ستون‌ها، بالا) */
+function filterRows_(data, mode) {
   const sheet = getSheet_();
   const last = sheet.getLastRow();
   if (last < 2) return [];
@@ -391,7 +440,7 @@ function filterRecords_(data, noLinks) {
     offset = first;
     count = lastHit - first + 1;
   }
-  const rows = sheet.getRange(2 + offset, 1, count, HEADERS.length).getValues();
+  const rows = readBlock_(sheet, 2 + offset, count, mode || "all");
 
   const wantCode = data.userCode ? codeKey_(data.userCode) : "";
   const wantMode = data.modeTitle ? normText_(data.modeTitle) : "";
@@ -410,8 +459,88 @@ function filterRecords_(data, noLinks) {
     if (wantMode && normText_(r[4]) !== wantMode) continue;
     if (wantOmoor && normText_(r[6]) !== wantOmoor) continue;
     if (wantEsh && latin_(r[9]).replace(/\D/g, "") !== wantEsh) continue;
-    out.push(rowToRecord_(r, noLinks));
+    out.push(r);
   }
+  return out;
+}
+
+/** رکوردهای فیلترشده (آبجکت) — جدیدترین اول */
+function filterRecords_(data, noLinks) {
+  return filterRows_(data, noLinks ? "nolinks" : "all").map(function (r) { return rowToRecord_(r, noLinks); });
+}
+
+/* ───────── گزارش گروهی (PDF خلاصه و گزارش نمایشی ادمین) ───────── */
+
+/**
+ * بهترین مبلغ هر اشتراک — دقیقاً مثل dedupAmount در برنامه (src/modules/records.js):
+ * مبلغ «وصول مطالبات» (بزرگ‌تر از صفر) بر بقیه می‌چربد؛ بین هم‌رده‌ها بزرگ‌ترین مبلغ.
+ */
+function bestPut_(map, key, amt, isCollect) {
+  const cur = map[key];
+  if (!cur || (isCollect && !cur.c) || (isCollect === cur.c && amt > cur.a)) map[key] = { a: amt, c: isCollect };
+}
+function bestSum_(map) {
+  let s = 0;
+  for (const k in map) s += map[k].a;
+  return s;
+}
+function newGroup_() { return { count: 0, modes: {}, follow: {} }; }
+function addToGroup_(g, title, isColl, key, amt) {
+  g.count++;
+  const m = g.modes[title] || (g.modes[title] = { count: 0, best: {} });
+  m.count++;
+  bestPut_(m.best, key, amt, isColl && amt > 0);
+  if (!isColl) bestPut_(g.follow, key, amt, false); // «پیگیری‌شده» = همهٔ عملیات‌های غیر وصول با هم، بدون تکرار اشتراک
+}
+function finishGroup_(g, collectKey, name, sub) {
+  const modes = {};
+  for (const t in g.modes) modes[t] = { count: g.modes[t].count, amount: bestSum_(g.modes[t].best) };
+  const out = {
+    count: g.count,
+    collectTotal: g.modes[collectKey] ? bestSum_(g.modes[collectKey].best) : 0,
+    followedTotal: bestSum_(g.follow),
+    modes: modes,
+  };
+  if (name !== undefined) out.name = name;
+  if (sub) out.sub = sub;
+  return out;
+}
+
+/** ردیف‌های خام (۱۱ ستون اول) → جمع کل و جمع به تفکیک امور / شهر-بخش / سرگروه */
+function aggregateRows_(rows) {
+  const collectKey = normText_(SETTINGS.COLLECT_TITLE);
+  const all = newGroup_();
+  const views = { omoor: {}, city: {}, leader: {} };
+  function slot(view, k, name, sub) {
+    return views[view][k] || (views[view][k] = { name: name, sub: sub, g: newGroup_() });
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const title = normText_(r[4]);
+    const isColl = title === collectKey;
+    const amt = Number(r[10]) || 0;
+    const key = "k" + (latin_(r[9]).replace(/\D/g, "") || "_" + r[1]);
+    const omoor = normText_(r[6]) || "—", city = normText_(r[7]) || "—", leader = normText_(r[8]) || "—";
+    addToGroup_(all, title, isColl, key, amt);
+    addToGroup_(slot("omoor", omoor, omoor).g, title, isColl, key, amt);
+    addToGroup_(slot("city", omoor + "|" + city, city, omoor).g, title, isColl, key, amt);
+    addToGroup_(slot("leader", leader, leader).g, title, isColl, key, amt);
+  }
+  const groups = {};
+  for (const v in views) {
+    const list = [];
+    for (const k in views[v]) list.push(finishGroup_(views[v][k].g, collectKey, views[v][k].name, views[v][k].sub));
+    list.sort(function (a, b) { return b.count - a.count || String(a.name).localeCompare(String(b.name)); });
+    groups[v] = list;
+  }
+  return { count: all.count, all: finishGroup_(all, collectKey), groups: groups };
+}
+
+function groupReport_(data) {
+  const t0 = Date.now();
+  const out = aggregateRows_(filterRows_(data, "agg"));
+  out.ok = true;
+  out.ms = Date.now() - t0;
   return out;
 }
 
