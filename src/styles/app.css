@@ -634,3 +634,31 @@ input.dp-input:disabled { cursor: not-allowed; }
 .grp-head .muted { font-size: .72rem; }
 .grp-count { margin-inline-start: auto; font-size: .78rem; font-weight: 700; color: var(--brand-d); }
 .grp-foot { font-size: .74rem; margin-top: 4px; }
+
+/* ───── مهلت اخطار / تعیین تکلیف اخطار / اخطارهای در جریان ───── */
+.photo-box.locked { cursor: default; border-color: #94a3b8; }
+.photo-box.locked::after { content: "🔒"; position: absolute; top: 4px; left: 4px; font-size: .8rem; opacity: .85; pointer-events: none; }
+#tab-form select:disabled, #tab-form input:disabled { background: #eef1f6; color: var(--ink2); opacity: .85; }
+.sections { display: flex; gap: 3px; margin: 0 0 8px; padding: 3px; background: #dfe6f1; border-radius: 13px; flex: none; }
+.sec-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; border: 0; border-radius: 10px; background: transparent; color: var(--ink2);
+  cursor: pointer; font: inherit; font-size: .8rem; font-weight: 800; transition: all .16s; line-height: 1.2; padding: 0 4px;
+}
+.sec-btn b { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px; background: rgba(14, 27, 51, .08); font-size: .68rem; }
+.sec-btn.active { background: #fff; color: var(--brand-d); box-shadow: 0 2px 8px rgba(14, 27, 51, .14); }
+.sec-btn.active b { background: var(--brand); color: #fff; }
+.sec-btn.has-expired b { background: var(--danger); color: #fff; }
+.warn-rec { cursor: pointer; }
+.warn-rec.warn-open::before { background: var(--warn); }
+.warn-rec.warn-expired { background: #fff1f2; border-color: #fca5a5; }
+.warn-rec.warn-expired::before { background: var(--danger); }
+.warn-rec.warn-expired .rec-l1 b { color: #b91c1c; }
+.warn-time { font-weight: 700; }
+.warn-expired .warn-time { color: #b91c1c; }
+.warn-open .warn-time { color: var(--warn-d); }
+.warn-badge { border-radius: 99px; padding: 3px 10px; font-weight: 800; font-size: .7rem; white-space: nowrap; }
+.warn-badge.ok { background: var(--warn-l); color: #5c4100; }
+.warn-badge.exp { background: #dc2626; color: #fff; }
+.rec-wait { background: var(--brand-l); color: #07306b; border-radius: 10px; padding: 3px 8px; font-size: .66rem; font-weight: 700; max-width: 120px; text-align: center; line-height: 1.4; }
+.rec-resolved { background: var(--ok-l); color: var(--ok-d); border-radius: 8px; padding: 2px 9px; margin: 3px 0; font-weight: 700; }
+.chev-go { transform: rotate(90deg); }

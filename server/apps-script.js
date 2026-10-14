@@ -25,6 +25,11 @@
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
  *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
  *
+ * نسخه ۴.۶ — اخطارها: دو ستون جدید «مهلت اخطار» (۲۴) و «وضعیت» (۲۵)؛ رکورد تعیین‌تکلیف (resolvesUid) وضعیت اخطار اصلی را «تعیین تکلیف با …» می‌کند؛
+ *  groupReport اخطارها را از عملکرد جدا می‌کند (در جریان / پایان مهلت / تعیین تکلیف شده)؛ وضعیت «پایان مهلت» با زمان ثبت + مهلت محاسبه می‌شود.
+ *
+ * نسخه ۴.۵: groupReport نتیجه را ۵ دقیقه Cache می‌کند و زمان مرحله‌ها (t) را برمی‌گرداند؛ بررسی سرستون‌های شیت دیگر در هر درخواست انجام نمی‌شود.
+ *
  * نسخه ۴.۴ — گزارش سریع:
  *  ✔ groupReport       خلاصهٔ ۶ عملیات برای کل و به تفکیک امور / شهر-بخش / سرگروه در «یک» عبور روی شیت (بدون ساخت ردیف‌ها)؛
  *                      قانون اشتراک تکراری مثل برنامه: مبلغ «وصول» اول، بعد بزرگ‌ترین مبلغ. پاسخ فقط چند کیلوبایت است
@@ -44,6 +49,7 @@ const SETTINGS = {
   // رمز ادمین: باید دقیقاً با "pass" کاربر ادمین در config/users.json یکی باشد.
   // (چون APP_TOKEN داخل برنامه‌ی همه اکیپ‌ها هست، اکشن‌های گزارش بدون این رمز کار نمی‌کنند.)
   ADMIN_KEY: "admin1405",
+  WARNING_TITLE: "صدور اخطار",   // باید دقیقاً با MODES.warning.title در config/modes.js یکی باشد (اخطارها در گزارش از عملکرد جدا می‌شوند)
   COLLECT_TITLE: "وصول مطالبات", // باید دقیقاً با MODES.collect.title در config/modes.js یکی باشد (اولویت مبلغ در اشتراک تکراری)
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
   PHOTOS_PER_CALL: 20,      // حداکثر تعداد عکس در هر درخواست getPhotos (عکس‌ها هم‌زمان خوانده می‌شوند)
@@ -58,7 +64,15 @@ const HEADERS = [
   "لینک عکس ۱", "لینک عکس ۲", "لینک عکس ۳", "لینک عکس ۴",
   "توضیحات", // ستون ۲۲ (انتهای جدول تا ستون‌های قبلی جابه‌جا نشوند)
   "آبادی",   // ستون ۲۳
+  "مهلت اخطار", // ستون ۲۴ — فقط برای «صدور اخطار» (مثلاً «۲۴ ساعت»)
+  "وضعیت",      // ستون ۲۵ — اخطار: «در جریان» ← «پایان مهلت» ← «تعیین تکلیف با …» ؛ رکورد تعیین‌تکلیف: «تعیین تکلیف شده از صدور اخطار»
 ];
+const DEADLINE_COL = 24;
+const STATUS_COL = 25;
+const ST_OPEN = "در جریان";
+const ST_EXPIRED = "پایان مهلت";
+const ST_RESOLVED_PREFIX = "تعیین تکلیف با ";
+const ST_FROM_WARNING = "تعیین تکلیف شده از صدور اخطار";
 const UID_COL = 2;
 const USERCODE_COL = 3;
 const DATE_COL = 6;
@@ -69,7 +83,7 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 44, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 46, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -105,7 +119,7 @@ function doPost(e) {
  */
 function submitBatch_(list) {
   const cache = CacheService.getScriptCache();
-  const results = [], pending = [];
+  const results = [], pending = [], resolves = [];
 
   list.forEach(function (data) {
     const res = { uid: data && data.uid, ok: false };
@@ -115,14 +129,17 @@ function submitBatch_(list) {
       validate_(data);
       // retry:false فقط از نسخه جدید برنامه برای «اولین ارسال» می‌آید؛ نسخه‌های قدیمی (بدون این فیلد) محتاطانه مثل ارسال مجدد بررسی می‌شوند
       const retry = data.retry !== false;
-      if (cache.get("uid:" + data.uid)) { res.ok = true; res.duplicate = true; return; }
+      const rv = data.resolvesUid ? { uid: String(data.resolvesUid), title: data.modeTitle, res: res } : null;
+      if (cache.get("uid:" + data.uid)) { if (rv) resolves.push(rv); res.ok = true; res.duplicate = true; return; }
       if (retry && uidExists_(data.uid)) {
         cache.put("uid:" + data.uid, "1", 21600);
+        if (rv) resolves.push(rv);
         res.ok = true; res.duplicate = true; return;
       }
       const links = uploadPhotos_(data, retry);
       res.ms = { photos: Date.now() - t0 };
       pending.push({ res: res, uid: String(data.uid), row: buildRow_(data, links) });
+      if (data.resolvesUid) resolves.push({ uid: String(data.resolvesUid), title: data.modeTitle, res: res });
     } catch (err) {
       res.error = String(err && err.message ? err.message : err);
     }
@@ -151,6 +168,17 @@ function submitBatch_(list) {
       try { lock.releaseLock(); } catch (x) {}
     }
   }
+  // اخطارهای اصلی که با این رکوردها تعیین تکلیف شدند (فقط برای رکوردهایی که واقعاً ثبت شدند یا قبلاً ثبت شده بودند)
+  const todo = resolves.filter(function (x) { return x.res.ok; });
+  if (todo.length) {
+    const lock2 = LockService.getScriptLock();
+    try {
+      lock2.waitLock(30000);
+      markResolved_(getSheet_(), todo);
+    } catch (err) { /* ادامه */ } finally {
+      try { lock2.releaseLock(); } catch (x) {}
+    }
+  }
   return results;
 }
 
@@ -165,7 +193,90 @@ function buildRow_(data, links) {
     links[0] || "", links[1] || "", links[2] || "", links[3] || "",
     String(data.note || "").slice(0, 500),
     String(data.abadi || "").slice(0, 200),
+    isWarningTitle_(data.modeTitle) ? String(data.deadlineLabel || "") : "",
+    rowStatusOnCreate_(data),
   ];
+}
+
+function isWarningTitle_(t) { return normText_(t) === normText_(SETTINGS.WARNING_TITLE); }
+/** وضعیت اولیهٔ ردیف: اخطار با مهلت = «در جریان» ؛ رکوردی که اخطاری را تعیین تکلیف کرده = «تعیین تکلیف شده از صدور اخطار» */
+function rowStatusOnCreate_(data) {
+  if (data.resolvesUid) return ST_FROM_WARNING;
+  if (isWarningTitle_(data.modeTitle) && data.deadlineLabel) return ST_OPEN;
+  return "";
+}
+/** زمان (Date یا متن ISO) → میلی‌ثانیه؛ نامعتبر = NaN */
+function tsMs_(v) {
+  if (v instanceof Date) return v.getTime();
+  const t = String(v || "");
+  return t ? Date.parse(t) : NaN;
+}
+/** مهلت (متن مثل «۲۴ ساعت» یا «یک هفته») → ساعت */
+function deadlineHours_(v) {
+  const t = latin_(v);
+  const m = t.match(/(\d+)\s*ساعت/);
+  if (m) return Number(m[1]);
+  return /هفته/.test(t) ? 168 : 0;
+}
+/**
+ * دستهٔ یک اخطار: "open" (در جریان) | "expired" (پایان مهلت) | "resolved" (تعیین تکلیف شده)
+ * مبنا: زمان ثبت در گوشی (createdAt) + مهلت؛ اخطارهای قدیمی بدون مهلت = پایان مهلت.
+ * (row = ردیف خام شیت؛ اندیس ۱۶ = زمان ثبت در گوشی، ۲۳ = مهلت، ۲۴ = وضعیت)
+ */
+function warnBucket_(row, nowMs) {
+  const st = normText_(row[24]);
+  if (st.indexOf("تعیین تکلیف") === 0) return "resolved";
+  const hrs = deadlineHours_(row[23]);
+  if (!hrs) return "expired";
+  let base = tsMs_(row[16]);
+  if (isNaN(base)) base = tsMs_(row[0]); // نبود زمان گوشی: زمان ثبت در سرور
+  if (isNaN(base)) return "expired";
+  return nowMs >= base + hrs * 3600000 ? "expired" : "open";
+}
+
+/** اخطار اصلی را بعد از ثبت عملیات جدید «تعیین تکلیف با …» می‌کند (ردیف با uid پیدا می‌شود؛ نبود ردیف مهم نیست) */
+function markResolved_(sheet, items) {
+  items.forEach(function (it) {
+    try {
+      const last = sheet.getLastRow();
+      if (last < 2) return;
+      const cell = sheet.getRange(2, UID_COL, last - 1, 1).createTextFinder(String(it.uid)).matchEntireCell(true).findNext();
+      if (cell) sheet.getRange(cell.getRow(), STATUS_COL).setValue(ST_RESOLVED_PREFIX + String(it.title || "").trim());
+    } catch (e) { /* ثبت رکورد جدید به این مورد وابسته نیست */ }
+  });
+}
+
+/**
+ * ظاهر شیت: اخطارهایی که مهلتشان تمام شده در ستون «وضعیت» به «پایان مهلت» تغییر می‌کنند
+ * (گزارش‌ها همیشه وضعیت را محاسبه می‌کنند؛ این فقط برای کسی است که خود شیت را می‌بیند). حداکثر هر ۱۵ دقیقه یک بار.
+ */
+function sweepExpired_() {
+  const cache = CacheService.getScriptCache();
+  if (cache.get("sweep")) return;
+  cache.put("sweep", "1", 900);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(3000)) return;
+  try {
+    const sheet = getSheet_();
+    const last = sheet.getLastRow();
+    if (last < 2 || sheet.getLastColumn() < STATUS_COL) return;
+    const n = last - 1;
+    const modes = sheet.getRange(2, 5, n, 1).getValues();
+    const created = sheet.getRange(2, 17, n, 1).getValues();
+    const dl = sheet.getRange(2, DEADLINE_COL, n, 2).getValues();
+    const now = Date.now();
+    let changed = 0;
+    for (let i = 0; i < n && changed < 300; i++) {
+      if (!isWarningTitle_(modes[i][0]) || normText_(dl[i][1]) !== ST_OPEN) continue;
+      const hrs = deadlineHours_(dl[i][0]);
+      const base = tsMs_(created[i][0]);
+      if (!hrs || isNaN(base) || now < base + hrs * 3600000) continue;
+      sheet.getRange(2 + i, STATUS_COL).setValue(ST_EXPIRED);
+      changed++;
+    }
+  } catch (e) { /* فقط ظاهر شیت است */ } finally {
+    try { lock.releaseLock(); } catch (x) {}
+  }
 }
 
 /** آیا این uid قبلاً در شیت ثبت شده؟ (فقط برای ارسال مجدد صدا زده می‌شود) */
@@ -210,14 +321,18 @@ function getSheet_() {
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold").setBackground("#0d6efd").setFontColor("white");
     sheet.setFrozenRows(1);
     sheet.setRightToLeft(true);
-  } else {
+  } else if (!CacheService.getScriptCache().get("hdr:ok:" + HEADERS.length)) {
     // شیت قدیمی: سرستون‌های جدید («توضیحات» و «آبادی») را در صورت نبودن به انتها اضافه کن
+    // (یک‌بار در ۶ ساعت بررسی می‌شود؛ هر بار بررسی چند فراخوانی کند به شیت بود)
+    if (sheet.getMaxColumns() < HEADERS.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), HEADERS.length - sheet.getMaxColumns());
+    const hdr = sheet.getRange(1, 1, 1, Math.max(1, Math.min(HEADERS.length, sheet.getLastColumn()))).getValues()[0];
     for (let c = 22; c <= HEADERS.length; c++) {
-      if (!sheet.getRange(1, c).getValue()) {
+      if (!hdr[c - 1]) {
         sheet.getRange(1, c).setValue(HEADERS[c - 1])
           .setFontWeight("bold").setBackground("#0d6efd").setFontColor("white");
       }
     }
+    CacheService.getScriptCache().put("hdr:ok:" + HEADERS.length, "1", 21600);
   }
   return sheet;
 }
@@ -391,7 +506,15 @@ function rowToRecord_(row, noLinks) {
     photoLinks: links,
     note: String(row[21] || ""),
     abadi: String(row[22] || ""),
+    deadline: String(row[23] || ""),
+    warnStatus: warnStatusText_(row),
   };
+}
+/** وضعیت اخطار برای نمایش (محاسبه‌شده با زمان فعلی)؛ برای رکوردهای غیراخطار همان متن ستون وضعیت */
+function warnStatusText_(row) {
+  if (!isWarningTitle_(row[4])) return String(row[24] || "");
+  const b = warnBucket_(row, Date.now());
+  return b === "open" ? ST_OPEN : b === "expired" ? ST_EXPIRED : String(row[24] || "");
 }
 
 /**
@@ -399,7 +522,21 @@ function rowToRecord_(row, noLinks) {
  *  "all" = همهٔ ستون‌ها | "nolinks" = بدون ۴ ستون لینک عکس (سبک‌تر؛ برای Excel) | "agg" = فقط ۱۱ ستون اول (برای جمع‌ها)
  */
 function readBlock_(sheet, startRow, count, mode) {
-  if (mode === "agg") return sheet.getRange(startRow, 1, count, 11).getValues();
+  if (mode === "agg") {
+    // ۱۱ ستون اول + زمان ثبت در گوشی (ستون ۱۷) + مهلت و وضعیت اخطار (ستون ۲۴ و ۲۵) برای جدا کردن اخطارها
+    const a = sheet.getRange(startRow, 1, count, 11).getValues();
+    const b = sheet.getRange(startRow, 17, count, 1).getValues();
+    const hasC = sheet.getLastColumn() >= STATUS_COL;
+    const c = hasC ? sheet.getRange(startRow, DEADLINE_COL, count, 2).getValues() : null;
+    for (let i = 0; i < count; i++) {
+      const row = a[i];
+      row.push("", "", "", "", "");            // اندیس ۱۱ تا ۱۵
+      row.push(b[i][0]);                       // ۱۶
+      row.push("", "", "", "", "", "");        // ۱۷ تا ۲۲
+      row.push(hasC ? c[i][0] : "", hasC ? c[i][1] : ""); // ۲۳ و ۲۴
+    }
+    return a;
+  }
   if (mode === "nolinks") {
     const a = sheet.getRange(startRow, 1, count, 17).getValues();
     const b = sheet.getRange(startRow, 22, count, HEADERS.length - 21).getValues();
@@ -414,8 +551,12 @@ function readBlock_(sheet, startRow, count, mode) {
 }
 
 /** خواندن و فیلتر ردیف‌های خام؛ جدیدترین اول (mode: روش خواندن ستون‌ها، بالا) */
-function filterRows_(data, mode) {
-  const sheet = getSheet_();
+function filterRows_(data, mode, tm, sheet0) {
+  tm = tm || {};
+  let tp = Date.now();
+  const lap = function (k) { const n = Date.now(); tm[k] = (tm[k] || 0) + (n - tp); tp = n; };
+  const sheet = sheet0 || getSheet_();
+  lap("open");
   const last = sheet.getLastRow();
   if (last < 2) return [];
   const n = last - 1;
@@ -440,7 +581,10 @@ function filterRows_(data, mode) {
     offset = first;
     count = lastHit - first + 1;
   }
+  lap("scan");
   const rows = readBlock_(sheet, 2 + offset, count, mode || "all");
+  lap("read");
+  tm.rows = rows.length;
 
   const wantCode = data.userCode ? codeKey_(data.userCode) : "";
   const wantMode = data.modeTitle ? normText_(data.modeTitle) : "";
@@ -461,6 +605,7 @@ function filterRows_(data, mode) {
     if (wantEsh && latin_(r[9]).replace(/\D/g, "") !== wantEsh) continue;
     out.push(r);
   }
+  lap("filter");
   return out;
 }
 
@@ -484,13 +629,20 @@ function bestSum_(map) {
   for (const k in map) s += map[k].a;
   return s;
 }
-function newGroup_() { return { count: 0, modes: {}, follow: {} }; }
-function addToGroup_(g, title, isColl, key, amt) {
+function newGroup_() { return { count: 0, modes: {}, follow: {}, warn: {} }; }
+function addToGroup_(g, title, isColl, key, amt, wb) {
   g.count++;
+  if (wb) {
+    // اخطارها از عملکرد جدا هستند: به‌تفکیک در جریان / پایان مهلت / تعیین تکلیف شده؛ مبلغ هر دسته بدون تکرار اشتراک
+    const w = g.warn[wb] || (g.warn[wb] = { count: 0, best: {} });
+    w.count++;
+    bestPut_(w.best, key, amt, false);
+    return;
+  }
   const m = g.modes[title] || (g.modes[title] = { count: 0, best: {} });
   m.count++;
   bestPut_(m.best, key, amt, isColl && amt > 0);
-  if (!isColl) bestPut_(g.follow, key, amt, false); // «پیگیری‌شده» = همهٔ عملیات‌های غیر وصول با هم، بدون تکرار اشتراک
+  if (!isColl) bestPut_(g.follow, key, amt, false); // «پیگیری‌شده» = قطع/فک پلمپ/مسدودی (بدون اخطار و بدون وصول)، بدون تکرار اشتراک
 }
 function finishGroup_(g, collectKey, name, sub) {
   const modes = {};
@@ -500,7 +652,11 @@ function finishGroup_(g, collectKey, name, sub) {
     collectTotal: g.modes[collectKey] ? bestSum_(g.modes[collectKey].best) : 0,
     followedTotal: bestSum_(g.follow),
     modes: modes,
+    warn: {},
   };
+  ["open", "expired", "resolved"].forEach(function (k) {
+    out.warn[k] = g.warn[k] ? { count: g.warn[k].count, amount: bestSum_(g.warn[k].best) } : { count: 0, amount: 0 };
+  });
   if (name !== undefined) out.name = name;
   if (sub) out.sub = sub;
   return out;
@@ -509,6 +665,8 @@ function finishGroup_(g, collectKey, name, sub) {
 /** ردیف‌های خام (۱۱ ستون اول) → جمع کل و جمع به تفکیک امور / شهر-بخش / سرگروه */
 function aggregateRows_(rows) {
   const collectKey = normText_(SETTINGS.COLLECT_TITLE);
+  const warnKey = normText_(SETTINGS.WARNING_TITLE);
+  const now = Date.now();
   const all = newGroup_();
   const views = { omoor: {}, city: {}, leader: {} };
   function slot(view, k, name, sub) {
@@ -518,13 +676,14 @@ function aggregateRows_(rows) {
     const r = rows[i];
     const title = normText_(r[4]);
     const isColl = title === collectKey;
+    const wb = title === warnKey ? warnBucket_(r, now) : "";
     const amt = Number(r[10]) || 0;
     const key = "k" + (latin_(r[9]).replace(/\D/g, "") || "_" + r[1]);
     const omoor = normText_(r[6]) || "—", city = normText_(r[7]) || "—", leader = normText_(r[8]) || "—";
-    addToGroup_(all, title, isColl, key, amt);
-    addToGroup_(slot("omoor", omoor, omoor).g, title, isColl, key, amt);
-    addToGroup_(slot("city", omoor + "|" + city, city, omoor).g, title, isColl, key, amt);
-    addToGroup_(slot("leader", leader, leader).g, title, isColl, key, amt);
+    addToGroup_(all, title, isColl, key, amt, wb);
+    addToGroup_(slot("omoor", omoor, omoor).g, title, isColl, key, amt, wb);
+    addToGroup_(slot("city", omoor + "|" + city, city, omoor).g, title, isColl, key, amt, wb);
+    addToGroup_(slot("leader", leader, leader).g, title, isColl, key, amt, wb);
   }
   const groups = {};
   for (const v in views) {
@@ -538,9 +697,35 @@ function aggregateRows_(rows) {
 
 function groupReport_(data) {
   const t0 = Date.now();
-  const out = aggregateRows_(filterRows_(data, "agg"));
+  const cache = CacheService.getScriptCache();
+  // نتیجهٔ همین فیلتر تا ۵ دقیقه (تا وقتی تعداد ردیف‌های شیت عوض نشده) در Cache می‌ماند؛ fresh:true آن را نادیده می‌گیرد
+  const keyRaw = [data.fromDate, data.toDate, data.userCode, data.modeTitle, data.omoor, data.eshterak].join("|");
+  const key = "gr:" + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, keyRaw, Utilities.Charset.UTF_8));
+  const tm = {};
+  const sheet0 = getSheet_();
+  tm.open = Date.now() - t0;
+  const last = sheet0.getLastRow();
+  if (!data.fresh) {
+    const hit = cache.get(key);
+    if (hit) {
+      try {
+        const o = JSON.parse(hit);
+        if (o.last === last) { o.res.cached = true; o.res.ms = Date.now() - t0; o.res.t = { open: tm.open }; return o.res; }
+      } catch (e) { /* ادامه بدون Cache */ }
+    }
+  }
+  const rows = filterRows_(data, "agg", tm, sheet0);
+  const t1 = Date.now();
+  const out = aggregateRows_(rows);
+  tm.agg = Date.now() - t1;
   out.ok = true;
+  out.t = tm; // زمان مرحله‌ها (میلی‌ثانیه): باز کردن شیت / خواندن ستون تاریخ / خواندن ردیف‌ها / فیلتر / جمع‌زدن؛ rows = تعداد ردیف
   out.ms = Date.now() - t0;
+  try {
+    const txt = JSON.stringify({ last: last, res: out });
+    if (txt.length < 95000) cache.put(key, txt, 300);
+  } catch (e) { /* Cache اختیاری است */ }
+  sweepExpired_();
   return out;
 }
 
@@ -568,6 +753,7 @@ function listRecords_(data) {
   const out = { ok: true, total: all.length, truncated: all.length > limit, records: all.slice(0, limit) };
   if (data.withSummary === true) out.summary = summarize_(all); // جمع‌ها در همان پاسخ (یک خواندن شیت به‌جای دو)
   out.ms = Date.now() - t0;
+  sweepExpired_();
   return out;
 }
 

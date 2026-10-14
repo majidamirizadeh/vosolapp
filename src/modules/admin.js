@@ -15,7 +15,7 @@ import { createPdfFromJpegs } from "../lib/pdf.js";
 import { ensureFonts } from "./photos.js";
 import { serverCall } from "./sync.js";
 import { sessionPass } from "./auth.js";
-import { summarize } from "./records.js";
+import { summarize, dedupAmount } from "./records.js";
 import { ICONS } from "../core/icons.js";
 import { getCached, cachedIds, putCached, clearCache, cacheCount } from "./photocache.js";
 
@@ -60,14 +60,31 @@ const normName = (v) => String(v ?? "").replace(/ي/g, "ی").replace(/ك/g, "ک"
 /** «ی/ک» عربی و ارقام را یکسان می‌کند تا عنوان عملیات با کلید پاسخ سرور یکی شود */
 const modeVal = (g, title) => (g.modes && (g.modes[title] || g.modes[normName(title)])) || { count: 0, amount: 0 };
 
+const WARN_BUCKETS = [["open", "در جریان"], ["expired", "پایان مهلت"], ["resolved", "تعیین‌تکلیف‌شده"]];
+const warnVal = (g, b) => (g.warn && g.warn[b]) || { count: 0, amount: 0 };
+/** عملیات‌ها بدون «صدور اخطار» — اخطارها از عملکرد جدا حساب می‌شوند */
+const opModes = () => Object.values(MODES).filter((m) => m.title !== MODES.warning.title);
+const isWarnRec = (r) => normName(r.modeTitle) === normName(MODES.warning.title);
+/** دستهٔ اخطار یک رکورد (فقط برای حالت جایگزین؛ سرور جدید warnStatus را محاسبه‌شده می‌دهد): اخطار قدیمی بدون وضعیت = پایان مهلت */
+const warnBucketOf = (r) => {
+  const st = String(r.warnStatus || "");
+  return st === "در جریان" ? "open" : st.startsWith("تعیین تکلیف") ? "resolved" : "expired";
+};
+
 /**
  * جایگزین سمت دستگاه برای سرورِ قدیمی (بدون action «groupReport»): از فهرست رکوردها همان ساختار پاسخ سرور را می‌سازد.
  * قانون تکراری‌ها همان قبلی است (dedupAmount در records.js: وصول اولویت دارد، بعد بزرگ‌ترین مبلغ).
+ * اخطارها از عملکرد جدا می‌شوند: به‌تفکیک در جریان / پایان مهلت / تعیین‌تکلیف‌شده.
  */
 function aggregateRecords(recs) {
   const mk = (list, name, sub) => {
-    const s = summarize(list);
-    const g = { count: list.length, collectTotal: s.collectTotal, followedTotal: s.followedTotal, modes: s.byMode };
+    const ops = list.filter((r) => !isWarnRec(r)), ws = list.filter(isWarnRec);
+    const s = summarize(ops);
+    const g = { count: list.length, collectTotal: s.collectTotal, followedTotal: s.followedTotal, modes: s.byMode, warn: {} };
+    for (const [b] of WARN_BUCKETS) {
+      const l = ws.filter((r) => warnBucketOf(r) === b);
+      g.warn[b] = { count: l.length, amount: dedupAmount(l).total };
+    }
     if (name !== undefined) g.name = name;
     if (sub) g.sub = sub;
     return g;
@@ -95,7 +112,8 @@ function aggregateRecords(recs) {
 function groupsDiffer(list, all) {
   const sum = (fn) => list.reduce((t, g) => t + fn(g), 0);
   if (sum((g) => g.collectTotal) !== all.collectTotal || sum((g) => g.followedTotal) !== all.followedTotal) return true;
-  return Object.values(MODES).some((m) => sum((g) => modeVal(g, m.title).amount) !== modeVal(all, m.title).amount);
+  if (opModes().some((m) => sum((g) => modeVal(g, m.title).amount) !== modeVal(all, m.title).amount)) return true;
+  return WARN_BUCKETS.some(([b]) => sum((g) => warnVal(g, b).amount) !== warnVal(all, b).amount);
 }
 const DIFF_NOTE = "توجه: هر گروه جداگانه و بدون تکرار اشتراک حساب شده است. اشتراکی که در بیش از یک گروه ثبت شده در هر گروه یک‌بار می‌آید؛ جمع کل بالا در کل داده بدون تکرار است، پس ممکن است با مجموع گروه‌ها کمی فرق کند.";
 
@@ -221,7 +239,7 @@ export function createAdminModule({ getUser }) {
       done() { clearInterval(timer); b.done(); },
     };
   }
-  const currentSort = () => (f.sort && f.sort.value) || "omoor";
+  const currentSort = () => "omoor"; // ردیف‌های Excel همیشه بر اساس امور (و بعد تاریخ، اکیپ) مرتب می‌شوند
 
   const currentGroup = () => (f.group && f.group.value) || "omoor";
   const groupLabel = (k) => GROUPS.find((g) => g.value === k)?.label || "امور";
@@ -234,7 +252,7 @@ export function createAdminModule({ getUser }) {
     cache = null; grCache = null; // دکمهٔ «دریافت گزارش» = تازه‌سازی صریح
     const j = makeJob(1);
     try {
-      const got = await fetchGroupReport(j, 1);
+      const got = await fetchGroupReport(j, 1, true);
       if (!got) return null;
       j.done();
       gr = got;
@@ -247,11 +265,20 @@ export function createAdminModule({ getUser }) {
   function stat(label, n) { return h("div", { class: "stat" }, h("b", {}, toPersianDigits(n)), h("span", {}, label)); }
   const statMoney = (label, n) => h("div", { class: "stat" }, h("b", {}, formatMoney(n)), h("span", {}, label));
 
-  /** جدول خلاصهٔ ۶ عملیات یک گروه (فقط عملیات‌های دارای ثبت؛ برای کل همه نمایش داده می‌شوند) */
-  function opsTable(g, all6) {
-    const rows = Object.values(MODES).map((m) => ({ title: m.title, v: modeVal(g, m.title) })).filter((r) => all6 || r.v.count > 0);
+  /** جدول خلاصهٔ ۵ عملیات (بدون اخطار) یک گروه (فقط عملیات‌های دارای ثبت؛ برای کل همه نمایش داده می‌شوند) */
+  function opsTable(g, all5) {
+    const rows = opModes().map((m) => ({ title: m.title, v: modeVal(g, m.title) })).filter((r) => all5 || r.v.count > 0);
     return h("table", { class: "mini-table" }, h("tbody", {}, rows.map((r) =>
       h("tr", {}, h("td", {}, r.title), h("td", {}, `${toPersianDigits(r.v.count)} مورد`), h("td", {}, `${formatMoney(r.v.amount)} ریال`)))));
+  }
+
+  /** اخطارها (جدا از عملکرد): در جریان / پایان مهلت / تعیین‌تکلیف‌شده؛ برای کارت گروه فقط ردیف‌های دارای ثبت */
+  function warnTable(g, always) {
+    const rows = WARN_BUCKETS.map(([b, label]) => ({ b, label, v: warnVal(g, b) }))
+      .filter((r) => r.v.count > 0 || (always && r.b !== "resolved"));
+    if (!rows.length) return null;
+    return h("table", { class: "mini-table warn-table" }, h("tbody", {}, rows.map((r) =>
+      h("tr", { class: "warn-" + r.b }, h("td", {}, `اخطار ${r.label}`), h("td", {}, `${toPersianDigits(r.v.count)} مورد`), h("td", {}, `${formatMoney(r.v.amount)} ریال`)))));
   }
 
   function renderGroupReport() {
@@ -272,6 +299,9 @@ export function createAdminModule({ getUser }) {
       gr.note && h("p", { class: "info-text" }, gr.note),
       h("h3", { class: "card-title section-title" }, "خلاصهٔ عملیات‌ها (کل)"),
       opsTable(all, true),
+      h("h3", { class: "card-title section-title" }, "اخطارها (جدا از عملکرد)"),
+      warnTable(all, true),
+      h("p", { class: "info-text" }, "تعداد و مبلغ اخطارها جدا از عملکرد است و در «جمع وصول» و «جمع مبالغ پیگیری‌شده» نیست."),
       h("h3", { class: "card-title section-title" }, `به تفکیک ${groupLabel(key)}`),
       list.map((g) => h("div", { class: "grp-card" },
         h("div", { class: "grp-head" },
@@ -279,6 +309,7 @@ export function createAdminModule({ getUser }) {
           g.sub && h("span", { class: "muted" }, g.sub),
           h("span", { class: "grp-count" }, `${toPersianDigits(g.count)} مورد`)),
         opsTable(g, false),
+        warnTable(g, false),
         h("div", { class: "muted grp-foot" }, `جمع پیگیری‌شده: ${formatMoney(g.followedTotal)} ریال`))),
       groupsDiffer(list, all) && h("p", { class: "info-text" }, DIFF_NOTE)
     ));
@@ -315,11 +346,11 @@ export function createAdminModule({ getUser }) {
 
   /** خلاصهٔ گروه‌بندی‌شدهٔ کل ردیف‌ها (برای PDF و گزارش نمایشی) — خود سرور جمع می‌زند و فقط چند کیلوبایت برمی‌گرداند */
   let grCache = null;
-  async function fetchGroupReport(j, step) {
+  async function fetchGroupReport(j, step, fresh = false) {
     const p = readFilters();
     if (!p) return null;
     const key = JSON.stringify(p);
-    if (grCache && grCache.key === key && Date.now() - grCache.t < CACHE_MS) {
+    if (!fresh && grCache && grCache.key === key && Date.now() - grCache.t < CACHE_MS) {
       j.step(step, `استفاده از خلاصهٔ دریافت‌شده (${toPersianDigits(Math.round((Date.now() - grCache.t) / 1000))} ثانیه پیش)…`);
       j.mark("خلاصه (از حافظه)");
       return { data: grCache.data, filters: p, note: grCache.note };
@@ -327,9 +358,14 @@ export function createAdminModule({ getUser }) {
     j.step(step, "دریافت خلاصهٔ گزارش از سرور…");
     let data = null, note = "";
     if (groupOk) {
-      const res = await serverCall("groupReport", p);
+      const res = await serverCall("groupReport", fresh ? { ...p, fresh: true } : p);
       j.srv(res);
-      if (res.ok) data = res;
+      if (res.ok) {
+        data = res;
+        if (res.cached) j.add("خلاصهٔ آمادهٔ سرور", 0);
+        const t = res.t || {}; // زمان مرحله‌های داخل سرور (برای پیدا کردن گلوگاه)
+        for (const [k, n] of [["open", "سرور: باز کردن شیت"], ["scan", "سرور: خواندن ستون تاریخ"], ["read", "سرور: خواندن ردیف‌ها"], ["filter", "سرور: فیلتر"], ["agg", "سرور: جمع‌زدن"]]) if (t[k] >= 100) j.add(n, t[k]);
+      }
       else if (/action نامعتبر/.test(String(res.error || ""))) groupOk = false; // سرور قدیمی است
       else { await failStage(j, "دریافت خلاصه از سرور", res); return null; }
     }
@@ -340,7 +376,7 @@ export function createAdminModule({ getUser }) {
       if (!res.ok) { await failStage(j, "دریافت فهرست از سرور", res); return null; }
       data = aggregateRecords(res.records || []);
       if (res.truncated) note = `فقط ${toPersianDigits((res.records || []).length)} مورد اول از ${toPersianDigits(res.total)} مورد حساب شد؛ بازه را محدودتر کنید (با به‌روزرسانی اسکریپت سرور این محدودیت برداشته می‌شود).`;
-      else note = "";
+      note = "سرور هنوز نسخهٔ جدید نیست؛ برای سرعت چند برابر، فایل server/apps-script.js جدید را در Apps Script بگذارید و Deploy ← Manage deployments ← New version بزنید." + (note ? " " + note : "");
     }
     j.mark("دریافت خلاصه");
     grCache = { key, t: Date.now(), data, note };
@@ -387,14 +423,16 @@ export function createAdminModule({ getUser }) {
     const key = currentGroup(), gLabel = groupLabel(key);
     const list = data.groups[key] || [];
     const all = data.all;
-    const modes = Object.values(MODES);
+    const modes = opModes(); // ۵ عملیات؛ اخطارها جدا و در ستون‌های «اخطار در جریان / پایان مهلت»
     const showNote = groupsDiffer(list, all);
 
     const cols = [
       { h: gLabel, w: 270, a: "r" },
       { h: "تعداد کل", w: 100, a: "c" },
-      ...modes.map((m) => ({ h: m.title, w: 190, a: "c", mode: m.title })),
-      { h: "جمع پیگیری‌شده", w: 170, a: "c", follow: true },
+      ...modes.map((m) => ({ h: m.title, w: 170, a: "c", mode: m.title })),
+      { h: "اخطار در جریان", w: 165, a: "c", warn: "open" },
+      { h: "اخطار پایان مهلت", w: 165, a: "c", warn: "expired" },
+      { h: "جمع پیگیری‌شده", w: 165, a: "c", follow: true },
     ];
     const M = 50;
     const tableW = PW - M * 2;
@@ -437,49 +475,60 @@ export function createAdminModule({ getUser }) {
         ctx.fillText(`گروه‌بندی: ${gLabel}${filters.omoor ? "  |  امور: " + filters.omoor : ""}`, PW - M, 158);
         ctx.fillText(toPersianDigits(`تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 196);
 
-        const bx = M, by = 230, bw = 820, bh = 215;
-        ctx.strokeStyle = "#c5cdd8";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(bx, by, bw, bh);
-        ctx.fillStyle = "#f4f7fb";
-        ctx.fillRect(bx + 1, by + 1, bw - 2, bh - 2);
-        ctx.fillStyle = "#0d6efd";
-        ctx.font = `700 26px ${FONT}`;
-        ctx.textAlign = "right";
-        ctx.fillText("خلاصه", bx + bw - 20, by + 32);
-        ctx.fillStyle = "#222";
-        ctx.font = `700 24px ${FONT}`;
-        ctx.fillText(`کل: ${toPersianDigits(data.count)} مورد`, bx + bw - 20, by + 70);
-        ctx.fillText(`جمع وصول: ${formatMoney(all.collectTotal)} ریال`, bx + bw - 20, by + 108);
-        ctx.fillText(`جمع مبالغ پیگیری‌شده: ${formatMoney(all.followedTotal)} ریال`, bx + bw - 20, by + 146);
-        ctx.font = `400 20px ${FONT}`;
-        ctx.fillStyle = "#555";
-        ctx.fillText(toPersianDigits(`تعداد ${gLabel}: ${list.length}`), bx + bw - 20, by + 184);
+        const by = 230, bh = 215;
+        const box = (x, w, title, color = "#0d6efd") => {
+          ctx.strokeStyle = "#c5cdd8";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, by, w, bh);
+          ctx.fillStyle = "#f4f7fb";
+          ctx.fillRect(x + 1, by + 1, w - 2, bh - 2);
+          ctx.fillStyle = color;
+          ctx.font = `700 26px ${FONT}`;
+          ctx.textAlign = "right";
+          ctx.fillText(title, x + w - 20, by + 32);
+        };
+        // ۱) خلاصه (سمت راست)  ۲) خلاصهٔ ۵ عملیات (وسط)  ۳) اخطارها، جدا از عملکرد (سمت چپ)
+        const w1 = 560, w2 = 600, w3 = PW - M * 2 - w1 - w2 - 48;
+        const x1 = PW - M - w1, x2 = x1 - 24 - w2, x3 = M;
+        box(x1, w1, "خلاصه");
+        const sumRows = [["کل", `${toPersianDigits(data.count)} مورد`], ["جمع وصول", `${formatMoney(all.collectTotal)} ریال`], ["جمع مبالغ پیگیری‌شده", `${formatMoney(all.followedTotal)} ریال`]];
+        sumRows.forEach(([lab, val], i) => {
+          const ry = by + 72 + i * 44;
+          ctx.fillStyle = "#222"; ctx.font = `700 23px ${FONT}`; ctx.textAlign = "right";
+          ctx.fillText(lab, x1 + w1 - 20, ry);
+          ctx.textAlign = "left"; ctx.font = `700 23px ${FONT}`;
+          ctx.fillText(fit(ctx, val, w1 - 300), x1 + 22, ry);
+        });
+        ctx.fillStyle = "#555"; ctx.font = `400 20px ${FONT}`; ctx.textAlign = "right";
+        ctx.fillText(toPersianDigits(`تعداد ${gLabel}: ${list.length}`), x1 + w1 - 20, by + 196);
 
-        // خلاصهٔ ۶ عملیات (کل): تعداد ثبت و مبلغ بدون تکرار اشتراک
-        const cx = bx + bw + 30, cw = PW - M - cx;
-        ctx.strokeStyle = "#c5cdd8";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(cx, by, cw, bh);
-        ctx.fillStyle = "#f4f7fb";
-        ctx.fillRect(cx + 1, by + 1, cw - 2, bh - 2);
-        ctx.fillStyle = "#0d6efd";
-        ctx.font = `700 26px ${FONT}`;
-        ctx.textAlign = "right";
-        ctx.fillText("خلاصهٔ عملیات‌ها", cx + cw - 20, by + 32);
+        box(x2, w2, "خلاصهٔ عملیات‌ها");
         modes.forEach((m, mi) => {
           const v = modeVal(all, m.title);
-          const ry = by + 68 + mi * 26;
-          if (mi % 2 === 0) { ctx.fillStyle = "#e9eff8"; ctx.fillRect(cx + 10, ry - 13, cw - 20, 26); }
+          const ry = by + 72 + mi * 28;
+          if (mi % 2 === 0) { ctx.fillStyle = "#e9eff8"; ctx.fillRect(x2 + 10, ry - 14, w2 - 20, 28); }
           ctx.fillStyle = "#222";
           ctx.font = `700 21px ${FONT}`;
           ctx.textAlign = "right";
-          ctx.fillText(m.title, cx + cw - 20, ry);
+          ctx.fillText(m.title, x2 + w2 - 20, ry);
           ctx.font = `400 21px ${FONT}`;
           ctx.textAlign = "center";
-          ctx.fillText(`${toPersianDigits(v.count)} مورد`, cx + cw / 2, ry);
+          ctx.fillText(`${toPersianDigits(v.count)} مورد`, x2 + w2 / 2 + 20, ry);
           ctx.textAlign = "left";
-          ctx.fillText(`${formatMoney(v.amount)} ریال`, cx + 22, ry);
+          ctx.fillText(`${formatMoney(v.amount)} ریال`, x2 + 22, ry);
+        });
+
+        box(x3, w3, "اخطارها (جدا از عملکرد)", "#b45309");
+        WARN_BUCKETS.forEach(([b, label], i) => {
+          const v = warnVal(all, b);
+          const ry = by + 66 + i * 50;
+          ctx.fillStyle = b === "expired" ? "#b91c1c" : "#222";
+          ctx.font = `700 22px ${FONT}`; ctx.textAlign = "right";
+          ctx.fillText(`اخطار ${label}`, x3 + w3 - 20, ry);
+          ctx.textAlign = "left";
+          ctx.fillText(`${toPersianDigits(v.count)} مورد`, x3 + 22, ry);
+          ctx.font = `400 19px ${FONT}`; ctx.fillStyle = "#444"; ctx.textAlign = "right";
+          ctx.fillText(`${formatMoney(v.amount)} ریال`, x3 + w3 - 20, ry + 25);
         });
         y = TOP_FIRST - 10;
       }
@@ -512,6 +561,18 @@ export function createAdminModule({ getUser }) {
               ctx.fillText(fit(ctx, g.sub, col.w - 16), cx - 10, y + ROW / 2 + 15);
               ctx.fillStyle = "#222";
             }
+          } else if (col.warn) {
+            const v = warnVal(g, col.warn);
+            ctx.textAlign = "center";
+            ctx.font = `700 21px ${FONT}`;
+            ctx.fillStyle = col.warn === "expired" && v.count ? "#b91c1c" : "#222";
+            ctx.fillText(v.count ? `${toPersianDigits(v.count)} مورد` : "—", cx - col.w / 2, y + ROW / 2 - 12);
+            if (v.count) {
+              ctx.font = `400 18px ${FONT}`;
+              ctx.fillStyle = "#444";
+              ctx.fillText(fit(ctx, formatMoney(v.amount), col.w - 12), cx - col.w / 2, y + ROW / 2 + 15);
+            }
+            ctx.fillStyle = "#222";
           } else if (col.mode) {
             const v = modeVal(g, col.mode);
             ctx.textAlign = "center";
@@ -949,7 +1010,6 @@ export function createAdminModule({ getUser }) {
       f.mode = h("select", {}, h("option", { value: "" }, "همه عملیات‌ها"), Object.values(MODES).map((m) => h("option", { value: m.title }, m.title)));
       f.omoor = h("select", {}, h("option", { value: "" }, "همه امورها"), OMOORS.map((o) => h("option", { value: o }, o)));
       f.eshterak = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "خالی = همه" });
-      f.sort = h("select", {}, SORT_KEYS.map((s) => h("option", { value: s.value }, s.label)));
       f.group = h("select", { onchange: reRenderGroup }, GROUPS.map((g) => h("option", { value: g.value }, g.label)));
       result = h("div", { class: "report-result" });
       links = h("div", { class: "export-links" });
@@ -968,7 +1028,6 @@ export function createAdminModule({ getUser }) {
           h("div", { class: "row2" }, field("کد اکیپ", f.user), field("شماره اشتراک", f.eshterak)),
           field("نوع عملیات", f.mode),
           field("امور (برای ZIP عکس‌ها فقط یک امور)", f.omoor),
-          field("مرتب‌سازی Excel (ردیف‌ها)", f.sort),
           field("گروه‌بندی گزارش (PDF و گزارش نمایشی)", f.group),
           h("div", { class: "btn-group" },
             h("button", { type: "button", class: "btn btn-primary", onclick: fetchReport }, h("span", { class: "ico-sm", html: ICONS.list }), "دریافت گزارش"),

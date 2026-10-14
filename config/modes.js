@@ -31,7 +31,7 @@ export const MODES = {
   warning: {
     title: "صدور اخطار",
     amountLabel: "مبلغ بدهی (ریال)",
-    photoSlots: ["عکس اخطار ۱", "عکس اخطار ۲"],
+    photoSlots: ["عکس اخطار"],
     minPhotos: 1,
   },
   collect: {
@@ -43,13 +43,13 @@ export const MODES = {
   cut_meter: {
     title: "قطع از محل کنتور",
     amountLabel: "مبلغ بدهی (ریال)",
-    photoSlots: ["عکس قبل", "عکس حین", "عکس بعد", "عکس اضافی"],
+    photoSlots: ["عکس قبل", "عکس حین", "عکس بعد"],
     minPhotos: 1,
   },
   cut_belt: {
     title: "قطع از محل کمربند",
     amountLabel: "مبلغ بدهی (ریال)",
-    photoSlots: ["عکس قبل", "عکس حین", "عکس بعد", "عکس اضافی"],
+    photoSlots: ["عکس قبل", "عکس حین", "عکس بعد"],
     minPhotos: 1,
   },
   unseal: {
@@ -65,3 +65,14 @@ export const MODES = {
     minPhotos: 1,
   },
 };
+
+/** مهلت اخطار (فقط «صدور اخطار»، اجباری): value = ساعت — label همان متنی است که در شیت سرور هم نوشته می‌شود */
+export const WARNING_DEADLINES = [
+  { value: 24, label: "۲۴ ساعت" },
+  { value: 48, label: "۴۸ ساعت" },
+  { value: 72, label: "۷۲ ساعت" },
+  { value: 168, label: "یک هفته" },
+];
+
+/** تعیین تکلیف اخطار: حداکثر مجموع عکس‌های قبلی + جدید */
+export const RESOLVE_MAX_PHOTOS = 4;

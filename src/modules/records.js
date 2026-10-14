@@ -2,7 +2,7 @@
  * منطق داده: ساخت رکورد، نام‌گذاری عکس‌ها، آمار، مهاجرت از نسخه قدیمی
  */
 import { CONFIG } from "../../config/app.config.js";
-import { MODES } from "../../config/modes.js";
+import { MODES, WARNING_DEADLINES } from "../../config/modes.js";
 import * as db from "../core/db.js";
 import { bus, EV } from "../core/bus.js";
 import { safeFileName, toLatinDigits, uuid } from "../core/utils.js";
@@ -11,6 +11,46 @@ import { allocateNames } from "./naming.js";
 /** شماره اشتراک → رشته امن برای نام فایل */
 export function subscriptionKey(raw) {
   return safeFileName(toLatinDigits(raw)).replace(/-/g, "");
+}
+
+/** مهلت انتخاب‌شده (ساعت) → { deadlineHours, deadlineLabel } فقط برای «صدور اخطار» */
+function deadlineFields(data) {
+  if (data.mode !== "warning") return { deadlineHours: null, deadlineLabel: "" };
+  const d = WARNING_DEADLINES.find((x) => x.value === Number(data.deadline));
+  return d ? { deadlineHours: d.value, deadlineLabel: d.label } : { deadlineHours: null, deadlineLabel: "" };
+}
+
+/**
+ * وضعیت یک اخطار «ارسال‌شده»: "open" در جریان | "expired" پایان مهلت | "resolved" تعیین تکلیف شده
+ * مبنا: زمان ثبت روی گوشی (createdAt) + مهلت. اخطار بدون مهلت (قدیمی) در این فهرست نمی‌آید (null).
+ */
+export function warnState(rec, now = Date.now()) {
+  if (!rec || rec.mode !== "warning" || !rec.deadlineHours) return null;
+  if (rec.resolved) return "resolved";
+  const base = Date.parse(rec.createdAt);
+  if (isNaN(base)) return "expired";
+  return now >= base + rec.deadlineHours * 3600000 ? "expired" : "open";
+}
+
+/** اخطارهای ارسال‌شدهٔ هنوز تعیین‌تکلیف‌نشده (برای بخش «اخطارهای در جریان») */
+export const isActiveWarning = (r) => r.mode === "warning" && r.status === "sent" && !!r.deadlineHours && !r.resolved;
+
+/** بعد از ارسال موفق رکوردی که اخطار را تعیین تکلیف کرده: اخطار اصلی از «در جریان» خارج می‌شود */
+export async function finishResolution(id) {
+  const rec = await db.records.get(id);
+  if (!rec || !rec.resolvesUid) return;
+  const all = await db.records.all();
+  const warn = all.find((r) => r.uid === rec.resolvesUid && r.mode === "warning");
+  if (warn && !warn.resolved) {
+    await db.records.update(warn.id, { resolved: { uid: rec.uid, modeTitle: rec.modeTitle, at: new Date().toISOString() } });
+    bus.emit(EV.RECORDS_CHANGED);
+  }
+}
+
+/** رکورد تعیین‌تکلیفِ ذخیره‌شده (هنوز ارسال‌نشده) برای یک اخطار، اگر باشد */
+export async function pendingResolutionFor(warnUid) {
+  const all = await db.records.all();
+  return all.find((r) => r.resolvesUid === warnUid && r.status === "pending") || null;
 }
 
 /**
@@ -39,6 +79,8 @@ export async function createRecord(data, photos) {
       eshterak: key,
       amount: Number(data.amount) || 0,
       note: data.note || "",
+      ...deadlineFields(data),
+      ...(data.resolvesUid ? { resolvesUid: data.resolvesUid } : {}), // این رکورد یک اخطار را تعیین تکلیف کرده است
       gpsLat: data.gps?.lat ?? null,
       gpsLng: data.gps?.lng ?? null,
       gpsAccuracy: data.gps?.accuracy ?? null,
@@ -90,6 +132,7 @@ export async function updateRecord(id, data, photos) {
         eshterak: key,
         amount: Number(data.amount) || 0,
         note: data.note || "",
+        ...deadlineFields(data),
         gpsLat: data.gps?.lat ?? null,
         gpsLng: data.gps?.lng ?? null,
         gpsAccuracy: data.gps?.accuracy ?? null,

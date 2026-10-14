@@ -4,7 +4,7 @@
 import { createXlsx } from "../lib/xlsx.js";
 import { createZip } from "../lib/zip.js";
 import { createPdfFromJpegs } from "../lib/pdf.js";
-import { summarize } from "./records.js";
+import { summarize, warnState } from "./records.js";
 import { ensureFonts } from "./photos.js";
 import { formatMoney, toPersianDigits, safeFileName } from "../core/utils.js";
 
@@ -13,6 +13,16 @@ const dtFa = (iso) => {
 };
 
 const sortRecords = (list) => [...list].sort((a, b) => a.id - b.id);
+
+/** «وضعیت اخطار» برای ستون جدید Excel: اخطار = در جریان / پایان مهلت / تعیین تکلیف با …؛ رکوردی که اخطاری را تعیین تکلیف کرده = «تعیین تکلیف شده از صدور اخطار» */
+function warnStatusText(r) {
+  if (r.resolvesUid) return "تعیین تکلیف شده از صدور اخطار";
+  if (r.mode !== "warning") return "";
+  if (!r.deadlineHours) return "";
+  if (r.status !== "sent") return "در انتظار ارسال";
+  const st = warnState(r);
+  return st === "resolved" ? `تعیین تکلیف با ${r.resolved?.modeTitle || ""}`.trim() : st === "expired" ? "پایان مهلت" : "در جریان";
+}
 
 /** نام فایل خروجی: Report_<from>_<to>_<user> */
 export function baseName(meta) {
@@ -47,6 +57,8 @@ export async function buildXlsx(records, meta) {
       { header: "وضعیت", width: 14 },
       { header: "زمان ثبت", width: 20 },
       { header: "توضیحات", width: 30 },
+      { header: "مهلت اخطار", width: 14 },
+      { header: "وضعیت اخطار", width: 30 },
     ],
     rows: list.map((r, i) => [
       i + 1, r.date, r.modeTitle, r.eshterak, r.omoor, r.city, r.abadi || "", r.leader, r.amount,
@@ -56,6 +68,8 @@ export async function buildXlsx(records, meta) {
       r.status === "sent" ? "ارسال شده" : "در انتظار ارسال",
       dtFa(r.createdAt),
       r.note || "",
+      r.mode === "warning" ? r.deadlineLabel || "" : "",
+      warnStatusText(r),
     ]),
   };
 

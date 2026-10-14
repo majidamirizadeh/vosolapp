@@ -7,7 +7,7 @@
 import { CONFIG } from "../../config/app.config.js";
 import { blobToBase64, fetchWithTimeout } from "../core/utils.js";
 import * as db from "../core/db.js";
-import { markSent, markError } from "./records.js";
+import { markSent, markError, finishResolution } from "./records.js";
 import { currentUser, canSend } from "./auth.js";
 
 export const TEST_USER_MSG = "حساب تست است؛ ارسال به سرور غیرفعال است";
@@ -53,6 +53,7 @@ const netError = (e) => (e.name === "AbortError" ? "پاسخ سرور دیر ش�
 async function settle(id, out) {
   if (out?.ok) {
     await markSent(id);
+    try { await finishResolution(id); } catch (e) { console.warn("resolution", e); } // اگر این رکورد اخطاری را تعیین تکلیف کرده، اخطار از «در جریان» خارج می‌شود
     return { ok: true, duplicate: !!out.duplicate };
   }
   const error = out?.error || "خطای نامشخص سرور";

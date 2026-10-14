@@ -11,7 +11,7 @@ import { h } from "./core/utils.js";
 import { ICONS } from "./core/icons.js";
 import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./modules/auth.js";
 import { showLogin } from "./modules/login.js";
-import { migrateLegacy, listFor } from "./modules/records.js";
+import { migrateLegacy, listFor, pendingResolutionFor } from "./modules/records.js";
 import { loadHandle, requestPersistence, status as folderStatus, folderApiSupported } from "./modules/storage.js";
 import { showWelcome } from "./modules/welcome.js";
 import { ensureFonts } from "./modules/photos.js";
@@ -269,10 +269,16 @@ async function start() {
   // ویرایش از بایگانی → باز شدن فرم با اطلاعات همان رکورد؛ بعد از ذخیره/انصراف برگشت به بایگانی
   const form = createFormModule({ getUser, onEditDone: () => router.show("archive") });
   const onEdit = async (rec) => { if (await form.startEdit(rec)) router.show("form"); };
+  // تعیین تکلیف اخطار در جریان: صفحهٔ اخطار در «فرم جدید» باز می‌شود و پیام «عملیات جدید را انتخاب کنید» می‌آید
+  const onResolve = async (rec) => {
+    const waiting = await pendingResolutionFor(rec.uid);
+    if (waiting) return alertBox("برای این اخطار قبلاً یک تعیین تکلیف ذخیره شده و هنوز ارسال نشده است.\nاز بخش «بایگانی» آن را ارسال کنید.", "تعیین تکلیف ذخیره شده");
+    if (await form.startResolve(rec)) { await router.show("form"); form.resolveHint(); }
+  };
 
   const modules = [
     form,
-    createArchiveModule({ getUser, onEdit }),
+    createArchiveModule({ getUser, onEdit, onResolve }),
     createReportsModule({ getUser }),
     ...(isAdmin(user) ? [createAdminModule({ getUser })] : []), // فقط ادمین
     createDownloadsModule(),

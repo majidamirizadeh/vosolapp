@@ -7,14 +7,14 @@ import { alertBox, confirmBox, toast, busy } from "../core/ui.js";
 import { bus, EV } from "../core/bus.js";
 import { getPref } from "../core/prefs.js";
 import * as db from "../core/db.js";
-import { listFor, remove, markDeviceSaved } from "./records.js";
+import { listFor, remove, markDeviceSaved, isActiveWarning, warnState } from "./records.js";
 import { sendRecord, sendMany, serverConfigured, TEST_USER_MSG } from "./sync.js";
 import { canSend } from "./auth.js";
 import { saveFiles } from "./storage.js";
 import { ICONS } from "../core/icons.js";
 
-export function createArchiveModule({ getUser, onEdit }) {
-  let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn;
+export function createArchiveModule({ getUser, onEdit, onResolve }) {
+  let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn, section = "archive", secBtns, segsEl, warnTimer = null;
   const openIds = new Set(); // موردهای بازشده در لیست
 
   const revoke = () => { urls.forEach(URL.revokeObjectURL); urls = []; };
@@ -24,13 +24,39 @@ export function createArchiveModule({ getUser, onEdit }) {
     return list.filter((r) => r.status === "pending").map((r) => r.id);
   }
 
+  const fmtLeft = (ms) => {
+    const m = Math.max(1, Math.round(Math.abs(ms) / 60000));
+    if (m < 60) return `${toPersianDigits(m)} دقیقه`;
+    const hh = Math.floor(m / 60), mm = m % 60;
+    if (hh < 48) return `${toPersianDigits(hh)} ساعت` + (mm ? ` و ${toPersianDigits(mm)} دقیقه` : "");
+    const d = Math.floor(hh / 24), h2 = hh % 24;
+    return `${toPersianDigits(d)} روز` + (h2 ? ` و ${toPersianDigits(h2)} ساعت` : "");
+  };
+
   async function render() {
     revoke();
     testNote.classList.toggle("hidden", allowed());
     sendAllBtn.disabled = !allowed();
-    const all = await listFor(getUser(), { allUsers: getPref("allUsersOnPhone") });
-    const items = all.filter((r) => filter === "all" || r.status === filter);
+    const every = await listFor(getUser(), { allUsers: getPref("allUsersOnPhone") });
+    const active = every.filter(isActiveWarning);          // اخطارهای ارسال‌شدهٔ در جریان → بخش «اخطارهای در جریان»
+    const all = every.filter((r) => !isActiveWarning(r));  // بقیه → بخش «بایگانی»
+    const now = Date.now();
+    const nExpired = active.filter((r) => warnState(r, now) === "expired").length;
+
+    secBtns.archive.querySelector("b").textContent = toPersianDigits(all.length);
+    secBtns.warn.querySelector("b").textContent = toPersianDigits(active.length);
+    secBtns.warn.classList.toggle("has-expired", nExpired > 0);
+    secBtns.archive.classList.toggle("active", section === "archive");
+    secBtns.warn.classList.toggle("active", section === "warn");
+    segsEl.classList.toggle("hidden", section !== "archive");
+    sendAllBtn.classList.toggle("hidden", section !== "archive");
     listEl.replaceChildren();
+
+    if (section === "warn") {
+      await renderWarnings(active, every, now);
+      return;
+    }
+    const items = all.filter((r) => filter === "all" || r.status === filter);
     const pend = all.filter((r) => r.status === "pending").length;
     tabs.forEach((t) => {
       const n = t.dataset.f === "all" ? all.length : t.dataset.f === "pending" ? pend : all.length - pend;
@@ -43,6 +69,40 @@ export function createArchiveModule({ getUser, onEdit }) {
       return;
     }
     for (const r of items) listEl.append(card(r));
+  }
+
+  /** «اخطارهای در جریان»: اخطارهای ارسال‌شده که هنوز تعیین تکلیف نشده‌اند؛ حذف‌شدنی نیستند؛ بعد از مهلت قرمز می‌شوند */
+  async function renderWarnings(active, every, now) {
+    if (!active.length) {
+      listEl.append(h("p", { class: "empty" }, "اخطار در جریانی وجود ندارد. اخطارهای «ارسال‌شده» بعد از ارسال به سرور اینجا می‌آیند."));
+      return;
+    }
+    listEl.append(h("p", { class: "info-text" }, "برای تعیین تکلیف، روی اخطار بزنید و عملیات جدید را انتخاب کنید. اخطارها تا تعیین تکلیف قابل حذف نیستند."));
+    const waiting = new Set(every.filter((r) => r.resolvesUid && r.status === "pending").map((r) => r.resolvesUid));
+    const end = (r) => Date.parse(r.createdAt) + r.deadlineHours * 3600000;
+    const sorted = [...active].sort((a, b) => end(a) - end(b)); // نزدیک‌ترین/گذشته‌ترین مهلت اول
+    for (const r of sorted) {
+      const st = warnState(r, now);
+      const expired = st === "expired";
+      const left = end(r) - now;
+      const wait = waiting.has(r.uid);
+      listEl.append(
+        h("div", { class: "rec warn-rec " + (expired ? "warn-expired" : "warn-open"), role: "button", tabindex: 0,
+          onclick: () => onResolve?.(r), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onResolve?.(r); } } },
+          h("div", { class: "rec-row" },
+            h("div", { class: "rec-main" },
+              h("div", { class: "rec-l1" }, h("b", { dir: "ltr" }, toPersianDigits(r.eshterak)), "  ·  ", r.modeTitle),
+              h("div", { class: "rec-l2" }, `${toPersianDigits(r.date)}  ·  ${formatMoney(r.amount)} ریال${r.omoor ? "  ·  " + r.omoor : ""}`),
+              h("div", { class: "rec-l2 warn-time" }, `مهلت: ${r.deadlineLabel}  ·  ` + (expired ? `پایان مهلت (${fmtLeft(left)} پیش)` : `${fmtLeft(left)} مانده`))
+            ),
+            wait
+              ? h("span", { class: "rec-wait" }, "تعیین تکلیف ذخیره شده — منتظر ارسال")
+              : h("span", { class: "warn-badge " + (expired ? "exp" : "ok") }, expired ? "پایان مهلت" : "در جریان"),
+            h("span", { class: "chev chev-go", html: ICONS.chevron })
+          )
+        )
+      );
+    }
   }
 
   /** هر مورد یک سطر جمع‌شده؛ با کلیک جزئیات باز/بسته می‌شود */
@@ -83,6 +143,9 @@ export function createArchiveModule({ getUser, onEdit }) {
           h("div", {}, `امور: ${r.omoor || "—"}  |  شهر/بخش: ${r.city || "—"}  |  آبادی: ${r.abadi || "—"}`),
           h("div", {}, `سرگروه: ${r.leader || "—"}`),
           getPref("allUsersOnPhone") && h("div", {}, `کاربر: ${r.userName || r.userCode}`),
+          r.deadlineLabel && h("div", {}, `مهلت اخطار: ${r.deadlineLabel}`),
+          r.resolved && h("div", { class: "rec-resolved" }, `تعیین تکلیف شد با ${r.resolved.modeTitle}`),
+          r.resolvesUid && h("div", { class: "rec-resolved" }, "این مورد، تعیین تکلیف یک اخطار است"),
           r.note && h("div", { class: "rec-note" }, "توضیحات: " + r.note),
           r.lastError && !sent && h("div", { class: "err" }, "آخرین خطا: " + r.lastError),
           h("div", { class: "thumbs" }, thumbs),
@@ -154,17 +217,25 @@ export function createArchiveModule({ getUser, onEdit }) {
       );
       testNote = h("div", { class: "test-banner hidden" }, TEST_USER_MSG);
       sendAllBtn = h("button", { type: "button", class: "btn btn-success btn-sm", onclick: sendAll }, "ارسال همه موارد در انتظار");
+      const mkSec = (key, label) => h("button", { type: "button", class: "sec-btn", "data-s": key, onclick: () => { section = key; render(); } }, label, " ", h("b", {}, "۰"));
+      secBtns = { archive: mkSec("archive", "بایگانی"), warn: mkSec("warn", "اخطارهای در جریان") };
+      segsEl = h("div", { class: "segs" }, tabs);
       container.append(
         h("div", { class: "card" },
+          h("div", { class: "sections" }, secBtns.archive, secBtns.warn),
           testNote,
           sendAllBtn,
-          h("div", { class: "segs" }, tabs),
+          segsEl,
           listEl
         )
       );
       bus.on(EV.RECORDS_CHANGED, () => container.classList.contains("active") && render());
     },
-    onShow: render,
-    onHide: revoke,
+    onShow() {
+      render();
+      clearInterval(warnTimer);
+      warnTimer = setInterval(() => { if (section === "warn") render(); }, 60000); // زمان باقی‌مانده و قرمز شدن بعد از مهلت
+    },
+    onHide() { revoke(); clearInterval(warnTimer); warnTimer = null; },
   };
 }

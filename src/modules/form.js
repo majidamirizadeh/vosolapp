@@ -2,7 +2,7 @@
  * تب «فرم جدید»: فیلدها، GPS، عکس‌ها، ذخیره در گوشی
  */
 import { CONFIG } from "../../config/app.config.js";
-import { FIELDS, MODES } from "../../config/modes.js";
+import { FIELDS, MODES, WARNING_DEADLINES, RESOLVE_MAX_PHOTOS } from "../../config/modes.js";
 import { isBakhsh } from "../../config/cities.js";
 import { todayJalali, parseJalali } from "../core/jalali.js";
 import { attachDatePicker } from "../core/datepicker.js";
@@ -11,7 +11,7 @@ import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
 import { kv } from "../core/db.js";
 import { getPref } from "../core/prefs.js";
 import { downscale, stampPhoto } from "./photos.js";
-import { createRecord, updateRecord, markDeviceSaved } from "./records.js";
+import { createRecord, updateRecord, markDeviceSaved, pendingResolutionFor } from "./records.js";
 import { saveFiles } from "./storage.js";
 import { sendRecord, serverConfigured } from "./sync.js";
 import { canSend } from "./auth.js";
@@ -53,24 +53,26 @@ export function createFormModule({ getUser, onEditDone }) {
     gps: { lat: null, lng: null, accuracy: null },
     inputs: {},
     editing: null,         // وقتی در حال ویرایش رکورد در انتظار هستیم: { id, info }
+    resolving: null,       // تعیین تکلیف یک اخطار در جریان: { warn, mode } (mode = عملیات جدید انتخاب‌شده یا null)
+    slots: [],             // عنوان باکس‌های عکس (معمولاً photoSlots حالت؛ در ویرایش/تعیین تکلیف ممکن است بیشتر باشد)
   };
-  let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeSel, editBanner, saveBtn;
+  let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeSel, editBanner, saveBtn, deadlineSel, deadlineField, bannerText;
 
   const mode = () => MODES[state.mode];
 
   function revokePhotos() {
     state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
-    state.photos = mode().photoSlots.map(() => null);
+    state.photos = state.slots.map(() => null);
   }
 
   /* ───────── عکس‌ها ───────── */
   function renderPhotos() {
     photoBox.replaceChildren();
-    photoBox.style.setProperty("--n", Math.min(mode().photoSlots.length, 4)); // تعداد ستون = تعداد عکس‌ها
-    mode().photoSlots.forEach((label, i) => {
+    photoBox.style.setProperty("--n", Math.min(state.slots.length, 4)); // تعداد ستون = تعداد عکس‌ها
+    state.slots.forEach((label, i) => {
       const p = state.photos[i];
       const box = h("div", {
-        class: "photo-box" + (p ? " filled" : ""),
+        class: "photo-box" + (p ? " filled" : "") + (p?.locked ? " locked" : ""),
         role: "button", tabindex: 0, "aria-label": label,
         onclick: () => choosePhoto(i),
         onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choosePhoto(i); } },
@@ -78,7 +80,7 @@ export function createFormModule({ getUser, onEditDone }) {
         p
           ? [h("img", { src: p.url, alt: label }), h("span", { class: "photo-tag" }, label)]
           : h("span", { class: "photo-label" }, h("i", { class: "ph-ico", html: ICONS.camera }), h("span", {}, label)),
-        p && h("button", { type: "button", class: "photo-x", "aria-label": "حذف عکس", html: ICONS.close, onclick: (e) => { e.stopPropagation(); removePhoto(i); } })
+        p && !p.locked && h("button", { type: "button", class: "photo-x", "aria-label": "حذف عکس", html: ICONS.close, onclick: (e) => { e.stopPropagation(); removePhoto(i); } })
       );
       photoBox.append(box);
     });
@@ -102,10 +104,11 @@ export function createFormModule({ getUser, onEditDone }) {
 
   /** کلیک روی باکس عکس: انتخاب دوربین یا گالری */
   async function choosePhoto(i) {
+    if (state.photos[i]?.locked) return; // عکس اخطار در تعیین تکلیف قابل تعویض/حذف نیست
     ensurePickers();
     pickSlot = i;
     if (CONFIG.photos.captureOnly) return camInput.click();
-    const how = await choiceBox(mode().photoSlots[i], [
+    const how = await choiceBox(state.slots[i], [
       { label: "دوربین", value: "camera" },
       { label: "انتخاب از گالری", value: "gallery", cls: "btn-secondary" },
     ]);
@@ -172,6 +175,16 @@ export function createFormModule({ getUser, onEditDone }) {
     return h("div", { class: "field" + (f.wide ? " wide" : "") + (f.key === "leader" ? " is-auto" : "") }, label, input);
   }
 
+  /** «مهلت اخطار» — فقط در «صدور اخطار» دیده می‌شود و اجباری است */
+  function buildDeadlineField() {
+    deadlineSel = h("select", { id: "f-deadline" },
+      h("option", { value: "" }, "انتخاب کنید"),
+      WARNING_DEADLINES.map((d) => h("option", { value: String(d.value) }, d.label)));
+    deadlineField = h("div", { class: "field deadline-field hidden" },
+      h("label", { for: "f-deadline" }, "مهلت اخطار", h("span", { class: "req" }, " *")), deadlineSel);
+    return deadlineField;
+  }
+
   /* ───────── «شهر/بخش» وابسته به «امور» ، «آبادی» وابسته به «شهر/بخش» ───────── */
   const cityDef = FIELDS.find((x) => x.optionsMap);
 
@@ -212,6 +225,7 @@ export function createFormModule({ getUser, onEditDone }) {
       else val = normalizeText(val);
       v[f.key] = val;
     }
+    v.deadline = deadlineSel.value ? Number(deadlineSel.value) : "";
     return v;
   }
 
@@ -222,6 +236,7 @@ export function createFormModule({ getUser, onEditDone }) {
         return f.type === "select" ? `«${f.label}» را از فهرست انتخاب کنید` : `«${f.label}» را وارد کنید`;
       }
     }
+    if (state.mode === "warning" && !state.resolving && !v.deadline) return "«مهلت اخطار» را انتخاب کنید";
     const n = state.photos.filter(Boolean).length;
     if (n < mode().minPhotos) return `حداقل ${toPersianDigits(mode().minPhotos)} عکس لازم است`;
     if (CONFIG.rules.requireGps && state.gps.lat == null) return "موقعیت GPS را ثبت کنید";
@@ -276,12 +291,15 @@ export function createFormModule({ getUser, onEditDone }) {
 
   /* ───────── حالت‌ها ───────── */
   async function setMode(key, force = false) {
+    if (state.resolving) return chooseResolveMode(key); // در تعیین تکلیف، عکس‌ها و فیلدها دست نمی‌خورند
     if (key === state.mode && !force) return;
     if (!force && state.photos.some(Boolean)) {
       if (!(await confirmBox("با تغییر نوع فرم، عکس‌های گرفته‌شده پاک می‌شوند. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) { modeSel.value = state.mode; return; }
     }
     state.mode = key;
+    state.slots = [...mode().photoSlots];
     revokePhotos();
+    deadlineField.classList.toggle("hidden", key !== "warning");
     modeSel.value = key;
     modeSel.dataset.mode = key; // رنگ کلید انتخاب بر اساس نوع عملیات (CSS)
     amountLabelEl.firstChild.textContent = mode().amountLabel;
@@ -304,7 +322,7 @@ export function createFormModule({ getUser, onEditDone }) {
 
   function scheduleDraft(photosChanged = false) {
     if (photosChanged) photosDirty = true;
-    if (!draftReady || state.editing || restoring) return;
+    if (!draftReady || state.editing || state.resolving || restoring) return;
     clearTimeout(draftTimer);
     draftTimer = setTimeout(flushDraft, 700);
   }
@@ -323,12 +341,13 @@ export function createFormModule({ getUser, onEditDone }) {
     clearTimeout(draftTimer);
     draftTimer = null;
     const u = getUser();
-    if (!u || !draftReady || state.editing || restoring || saving) return;
+    if (!u || !draftReady || state.editing || state.resolving || restoring || saving) return;
     const gen = draftGen;
     try {
       if (!isDirty()) { await clearDraft(); return; }
       const values = {};
       for (const f of FIELDS) if (f.key !== "leader") values[f.key] = state.inputs[f.key].value;
+      values.deadline = deadlineSel.value;
       if (photosDirty) {
         photosDirty = false;
         const photos = state.photos.map((p) => (p ? { blob: p.blob, width: p.width, height: p.height } : null));
@@ -364,13 +383,14 @@ export function createFormModule({ getUser, onEditDone }) {
         if (f.key === cityDef.dependsOn) fillCityOptions(false);
       }
       if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
+      deadlineSel.value = [...deadlineSel.options].some((o) => o.value === String(d.values?.deadline || "")) ? String(d.values?.deadline || "") : "";
       syncAbadi();
       applyLeader();
       state.gps = d.gps && d.gps.lat != null ? d.gps : { lat: null, lng: null, accuracy: null };
       showGps();
       state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
       const okPhotos = pr && pr.mode === state.mode && Array.isArray(pr.photos);
-      state.photos = mode().photoSlots.map((_, i) => {
+      state.photos = state.slots.map((_, i) => {
         const p = okPhotos ? pr.photos[i] : null;
         return p?.blob ? { blob: p.blob, width: p.width, height: p.height, url: URL.createObjectURL(p.blob) } : null;
       });
@@ -432,6 +452,7 @@ export function createFormModule({ getUser, onEditDone }) {
   async function save() {
     const user = getUser();
     if (!user) return alertBox("ابتدا وارد شوید");
+    if (state.resolving) return saveResolution(user);
     const v = readValues();
     const err = validate(v);
     if (err) return toast(err, "error");
@@ -527,6 +548,7 @@ export function createFormModule({ getUser, onEditDone }) {
     }
     syncAbadi();
     applyLeader();
+    deadlineSel.value = "";
     state.gps = { lat: null, lng: null, accuracy: null };
     showGps();
     revokePhotos();
@@ -534,6 +556,172 @@ export function createFormModule({ getUser, onEditDone }) {
     state.inputs.eshterak.focus();
     window.scrollTo({ top: 0, behavior: "smooth" });
     document.getElementById("view")?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /* ───────── تعیین تکلیف اخطار در جریان ─────────
+   * اخطار ارسال‌شده در فرم باز می‌شود؛ همهٔ باکس‌ها فقط‌خواندنی‌اند به‌جز «تاریخ» و عکس‌های جدید.
+   * کاربر «عملیات جدید» را انتخاب می‌کند؛ حداقل یک عکس جدید لازم است و مجموع عکس‌های قبلی و جدید حداکثر ۴ است.
+   * با ثبت، یک رکورد «جدید» ساخته می‌شود (عکس‌های قبلی هم در آن می‌آیند)؛ بعد از ارسال موفق، اخطار از «در جریان» خارج می‌شود. */
+
+  /** گزینه‌های «نوع عملیات»: در حالت عادی همه؛ در تعیین تکلیف: «انتخاب عملیات جدید» + عملیات‌ها بدون «صدور اخطار» */
+  function setModeOptions(resolving) {
+    modeSel.replaceChildren(
+      ...(resolving ? [h("option", { value: "" }, "عملیات جدید را انتخاب کنید")] : []),
+      ...Object.entries(MODES).filter(([k]) => !resolving || k !== "warning").map(([key, m]) => h("option", { value: key }, m.title)));
+  }
+
+  /** خروج از ظاهر «تعیین تکلیف» (فیلدها باز، فهرست کامل عملیات‌ها) — بدون پاک‌کردن مقادیر */
+  function leaveResolveUi() {
+    if (!state.resolving && !deadlineSel.disabled && modeSel.options.length === Object.keys(MODES).length) return;
+    state.resolving = null;
+    setFieldsLocked(false);
+    setModeOptions(false);
+  }
+
+  function setFieldsLocked(lock) {
+    for (const f of FIELDS) if (f.key !== "date") state.inputs[f.key].disabled = lock;
+    deadlineSel.disabled = lock;
+  }
+
+  function refreshResolveBanner() {
+    const r = state.resolving;
+    const e = toPersianDigits(r.warn.eshterak);
+    bannerText.textContent = r.mode ? `تعیین تکلیف اخطار با ${MODES[r.mode].title}` : `تعیین تکلیف اخطار اشتراک ${e} — عملیات جدید را انتخاب کنید`;
+    saveBtn.textContent = "ثبت تعیین تکلیف";
+  }
+
+  /** انتخاب عملیات جدید (یا برگشت به «انتخاب نشده») بدون دست‌زدن به عکس‌ها */
+  function chooseResolveMode(key) {
+    const r = state.resolving;
+    r.mode = MODES[key] && key !== "warning" ? key : null;
+    modeSel.value = r.mode || "";
+    modeSel.dataset.mode = r.mode || "";
+    if (r.mode) { state.mode = r.mode; amountLabelEl.firstChild.textContent = mode().amountLabel; }
+    refreshResolveBanner();
+  }
+
+  async function startResolve(warn) {
+    if (!warn || warn.mode !== "warning") return false;
+    const dirty = state.photos.some(Boolean) || state.inputs.eshterak.value.trim() || state.inputs.amount.value.trim();
+    if (dirty || state.editing || state.resolving) {
+      if (!(await confirmBox("اطلاعات نیمه‌کاره‌ی فرم فعلی پاک می‌شود. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) return false;
+    }
+    await clearDraft();
+    state.editing = null;
+    leaveResolveUi();
+    state.mode = "warning";
+    await setMode("warning", true); // عکس‌ها و فیلدهای فرم قبلی را پاک می‌کند
+    for (const f of FIELDS) {
+      const el = state.inputs[f.key];
+      let val = warn[f.key] ?? "";
+      if (f.type === "money") val = val ? Number(val).toLocaleString("en-US") : "";
+      if (f.type === "select" && val && ![...el.options].some((o) => o.value === val)) el.append(h("option", { value: val }, val));
+      el.value = val;
+      if (f.key === cityDef.dependsOn) fillCityOptions(false);
+    }
+    // فهرست شهر پس از تعیین امور ساخته می‌شود؛ مقدار شهر دوباره گذاشته شود
+    const cityEl = state.inputs[cityDef.key];
+    if (warn.city && ![...cityEl.options].some((o) => o.value === warn.city)) cityEl.append(h("option", { value: warn.city }, warn.city));
+    cityEl.value = warn.city || "";
+    syncAbadi();
+    state.inputs.abadi.value = warn.abadi || "";
+    state.inputs.date.value = todayJalali(); // تاریخ عملیات جدید: امروز (قابل ویرایش)
+    state.gps = { lat: warn.gpsLat ?? null, lng: warn.gpsLng ?? null, accuracy: warn.gpsAccuracy ?? null };
+    showGps();
+
+    state.resolving = { warn, mode: null };
+    setModeOptions(true);
+    modeSel.value = "";
+    modeSel.dataset.mode = "";
+    deadlineField.classList.add("hidden");
+    // عکس‌های اخطار (قفل) + جای عکس‌های جدید؛ مجموع حداکثر ۴
+    const old = (warn.photos || []).slice(0, RESOLVE_MAX_PHOTOS);
+    const fresh = Math.max(1, RESOLVE_MAX_PHOTOS - old.length);
+    state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
+    state.slots = [...old.map((_, i) => `عکس اخطار${old.length > 1 ? " " + toPersianDigits(i + 1) : ""}`), ...Array.from({ length: fresh }, (_, i) => `عکس جدید${fresh > 1 ? " " + toPersianDigits(i + 1) : ""}`)];
+    state.photos = [
+      ...old.map((p) => ({ blob: p.blob, width: p.width, height: p.height, name: p.name, existing: true, locked: true, url: URL.createObjectURL(p.blob) })),
+      ...Array.from({ length: fresh }, () => null),
+    ];
+    renderPhotos();
+    setFieldsLocked(true);
+    editBanner.classList.remove("hidden");
+    refreshResolveBanner();
+    window.scrollTo({ top: 0 });
+    document.getElementById("view")?.scrollTo({ top: 0 });
+    return true;
+  }
+
+  /** پیام راهنما بعد از باز شدن تب فرم (از main.js صدا زده می‌شود) */
+  function resolveHint() {
+    if (state.resolving && !state.resolving.mode)
+      alertBox("عملیات جدید را از فهرست «نوع عملیات» (بالای فرم) انتخاب کنید.\n\nفقط «تاریخ» و «عکس‌های جدید» قابل ویرایش‌اند؛ حداقل یک عکس جدید لازم است.", "تعیین تکلیف اخطار");
+  }
+
+  async function endResolve() {
+    leaveResolveUi();
+    editBanner.classList.add("hidden");
+    saveBtn.textContent = "ذخیره در گوشی";
+    state.mode = Object.keys(MODES)[0];
+    await clearForm();
+  }
+
+  async function cancelResolve() {
+    if (!(await confirmBox("از تعیین تکلیف منصرف می‌شوید؟ اخطار همچنان «در جریان» می‌ماند.", { yes: "انصراف", no: "ادامه", danger: true }))) return;
+    await endResolve();
+    onEditDone?.();
+  }
+
+  async function saveResolution(user) {
+    const r = state.resolving;
+    if (!r.mode) return toast("ابتدا «عملیات جدید» را انتخاب کنید", "error");
+    const v = readValues();
+    if (!v.date) return toast("«تاریخ» نامعتبر است (مثال: 1405/07/15)", "error");
+    const fresh = state.photos.filter((p) => p && !p.existing);
+    if (!fresh.length) return toast("حداقل یک عکس جدید لازم است", "error");
+    const dup = await pendingResolutionFor(r.warn.uid);
+    if (dup) return alertBox("برای این اخطار قبلاً یک تعیین تکلیف ذخیره شده و هنوز ارسال نشده است.\nاز تب «بایگانی» آن را ارسال کنید.", "تعیین تکلیف تکراری");
+    if (!(await confirmBox(`اخطار اشتراک ${toPersianDigits(r.warn.eshterak)} با «${MODES[r.mode].title}» تعیین تکلیف شود؟`, { yes: "تأیید و ثبت", no: "برگشت" }))) return;
+
+    const b = busy("در حال درج اطلاعات روی عکس‌ها…");
+    saving = true;
+    try {
+      const info = buildStampInfo({ ...v, modeTitle: MODES[r.mode].title, userName: user.name, gps: state.gps });
+      const stamped = [];
+      for (const p of state.photos.filter(Boolean)) {
+        if (p.existing) stamped.push({ blob: p.blob, width: p.width, height: p.height });
+        else stamped.push(await stampPhoto(p.blob, info));
+      }
+      b.text("در حال ذخیره در گوشی…");
+      const rec = await createRecord({ ...v, mode: r.mode, user, gps: state.gps, resolvesUid: r.warn.uid }, stamped);
+      let saveNote = "";
+      if (getPref("autoSavePhotos") && rec.photos.length) {
+        b.text("ذخیره فایل عکس‌ها در گوشی…");
+        const res = await saveFiles(rec.photos.map((p) => ({ name: p.name, blob: p.blob })), [rec.date.replace(/\//g, "-")]);
+        await markDeviceSaved(rec.id, res.saved === rec.photos.length);
+        saveNote = res.method === "folder" ? " (در پوشه انتخابی)" : res.method === "downloads" ? " (در پوشه دانلود)" : "";
+      }
+      b.done();
+      const auto = getPref("autoSync") && navigator.onLine && serverConfigured() && canSend(user);
+      if (auto) {
+        sendRecord(rec.id).then((res) => {
+          if (res.skipped) return;
+          toast(res.ok ? "به سرور ارسال شد ✓ — اخطار از «در جریان» خارج شد" : "ارسال خودکار ناموفق بود؛ از تب «بایگانی» دوباره بفرستید", res.ok ? "success" : "error");
+        });
+      }
+      await alertBox(
+        `✅ تعیین تکلیف ذخیره شد${saveNote}\n\n${MODES[r.mode].title} — اشتراک ${toPersianDigits(rec.eshterak)}\n\n${auto ? "در حال ارسال خودکار به سرور…" : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید؛ بعد از ارسال، اخطار از «در جریان» خارج می‌شود."}`,
+        "تعیین تکلیف اخطار"
+      );
+      await endResolve();
+      onEditDone?.();
+    } catch (e) {
+      b.done();
+      console.error(e);
+      alertBox("خطا در ذخیره: " + (e.message || e), "خطا");
+    } finally {
+      saving = false;
+    }
   }
 
   /* ───────── ویرایش رکورد در انتظار ───────── */
@@ -551,6 +739,7 @@ export function createFormModule({ getUser, onEditDone }) {
     applyLeader();
     state.inputs.date.value = todayJalali();
     state.gps = { lat: null, lng: null, accuracy: null };
+    deadlineSel.value = "";
     showGps();
     await setMode(state.mode, true);
   }
@@ -576,8 +765,12 @@ export function createFormModule({ getUser, onEditDone }) {
       if (!(await confirmBox("اطلاعات نیمه‌کاره‌ی فرم فعلی پاک می‌شود. ادامه می‌دهید؟", { yes: "ادامه", danger: true }))) return false;
     }
     await clearDraft(); // فرم نیمه‌کاره (و پیش‌نویسش) با تأیید کاربر کنار می‌رود
+    leaveResolveUi();
     state.mode = MODES[rec.mode] ? rec.mode : Object.keys(MODES)[0];
     await setMode(state.mode, true);
+    deadlineSel.value = String(rec.deadlineHours || "");
+    // رکورد قدیمی ممکن است عکس بیشتری از باکس‌های فعلی داشته باشد؛ هیچ عکسی حذف نشود
+    while (state.slots.length < (rec.photos?.length || 0)) state.slots.push(`عکس ${toPersianDigits(state.slots.length + 1)}`);
     for (const f of FIELDS) {
       const el = state.inputs[f.key];
       let val = rec[f.key] ?? "";
@@ -593,7 +786,7 @@ export function createFormModule({ getUser, onEditDone }) {
     showGps();
     // عکس‌های فعلی در اسلات‌ها (قابل حذف/تعویض)
     state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
-    state.photos = mode().photoSlots.map((_, i) => {
+    state.photos = state.slots.map((_, i) => {
       const p = rec.photos?.[i];
       return p ? { blob: p.blob, width: p.width, height: p.height, name: p.name, existing: true, url: URL.createObjectURL(p.blob) } : null;
     });
@@ -603,7 +796,7 @@ export function createFormModule({ getUser, onEditDone }) {
       userName: rec.userName,
       stamp: buildStampInfo({ ...rec, modeTitle: rec.modeTitle, userName: rec.userName, gps: { lat: rec.gpsLat, lng: rec.gpsLng } }),
     };
-    editBanner.querySelector("b").textContent = `ویرایش مورد اشتراک ${toPersianDigits(rec.eshterak)}`;
+    bannerText.textContent = `ویرایش مورد اشتراک ${toPersianDigits(rec.eshterak)}`;
     editBanner.classList.remove("hidden");
     saveBtn.textContent = "ذخیره تغییرات";
     window.scrollTo({ top: 0 });
@@ -616,6 +809,8 @@ export function createFormModule({ getUser, onEditDone }) {
     title: "فرم جدید",
     icon: ICONS.form,
     startEdit,
+    startResolve,
+    resolveHint,
     async mount(container) {
       root = container;
       // انتخاب نوع عملیات: یک کلید بازشوی تمام‌عرض (به‌جای ۶ دکمه) که با هر گزینه رنگ خودش را می‌گیرد
@@ -629,16 +824,17 @@ export function createFormModule({ getUser, onEditDone }) {
         h("span", { class: "gps-line" }, gpsInfo), gpsAcc,
         h("span", { class: "gps-ico", html: ICONS.pin }));
 
+      bannerText = h("b", {}, "ویرایش");
       editBanner = h("div", { class: "edit-banner hidden" },
-        h("b", {}, "ویرایش"),
-        h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: cancelEdit }, "انصراف از ویرایش"));
+        bannerText,
+        h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => (state.resolving ? cancelResolve() : cancelEdit()) }, "انصراف"));
       saveBtn = h("button", { type: "button", class: "btn btn-primary btn-lg", onclick: save }, "ذخیره در گوشی");
 
       root.append(
         h("div", { class: "card" },
           editBanner,
           h("div", { class: "mode-wrap" }, modeSel),
-          h("div", { class: "field-grid" }, FIELDS.map(buildField), h("div", { class: "field gps-field" }, gpsBtn)),
+          h("div", { class: "field-grid" }, FIELDS.flatMap((f) => (f.key === "amount" ? [buildField(f), buildDeadlineField()] : [buildField(f)])), h("div", { class: "field gps-field" }, gpsBtn)),
           h("div", { class: "field photos-field" }, h("label", {}, "عکس‌ها"), photoBox),
           saveBtn
         )
@@ -667,7 +863,7 @@ export function createFormModule({ getUser, onEditDone }) {
     },
     onShow() {
       if (!draftChecked) { draftChecked = true; checkDraft(); } // بدون انتظار؛ پرسش پیش‌نویس روی فرم باز می‌شود
-      if (!state.editing) applyLeader();
+      if (!state.editing && !state.resolving) applyLeader();
       // تاریخ پیش‌فرض اگر روز عوض شده یا خالی است
       if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
     },
