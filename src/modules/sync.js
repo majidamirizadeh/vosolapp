@@ -7,7 +7,7 @@
 import { CONFIG } from "../../config/app.config.js";
 import { blobToBase64, fetchWithTimeout } from "../core/utils.js";
 import * as db from "../core/db.js";
-import { markSent, markError, finishResolution } from "./records.js";
+import { markSent, markError, finishResolution, restoreFromServer } from "./records.js";
 import { currentUser, canSend } from "./auth.js";
 
 export const TEST_USER_MSG = "حساب تست است؛ ارسال به سرور غیرفعال است";
@@ -174,4 +174,18 @@ export async function serverCall(action, params = {}) {
   } catch (e) {
     return { ok: false, error: e.name === "AbortError" ? "پاسخ سرور دیر شد (timeout)" : "عدم ارتباط با سرور: " + (e.message || e) };
   }
+}
+
+/**
+ * «بازیابی از سرور»: رکوردهای N روز اخیر همین کاربر از سرور گرفته و به بایگانی گوشی اضافه می‌شود (بدون عکس).
+ * → { ok, added, existing, skipped, total, days } یا { ok:false, error }
+ */
+export async function restoreMyRecords(user, days = 60) {
+  const res = await serverCall("myRecords", { userCode: user.code, days });
+  if (!res || !res.ok) {
+    const err = String(res?.error || "");
+    return { ok: false, error: /action نامعتبر/.test(err) ? "سرور هنوز به‌روز نشده است (نسخهٔ ۴.۷ اسکریپت را منتشر کنید)" : err || "خطای نامشخص" };
+  }
+  const r = await restoreFromServer(user, res.records || []);
+  return { ok: true, ...r, total: (res.records || []).length, days: res.days || days };
 }

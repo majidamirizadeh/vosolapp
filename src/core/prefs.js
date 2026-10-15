@@ -6,6 +6,8 @@ const DEFAULTS = {
   autoSavePhotos: true, // پیش‌فرض روشن
   autoSync: true, // پیش‌فرض روشن (کاربری که قبلاً دستی تغییر داده، انتخاب خودش حفظ می‌شود)
   allUsersOnPhone: false,
+  sound: true, // صدا (بوق موفقیت/خطا/هشدار) پیش‌فرض روشن
+  vibrate: false, // لرزش پیش‌فرض خاموش
 };
 
 let cache = null;

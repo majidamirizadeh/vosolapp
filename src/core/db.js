@@ -100,6 +100,16 @@ export const records = {
     });
   },
   remove: (id) => tx("records", "readwrite", ({ records }) => wrap(records.delete(id))),
+  /** افزودن چند رکورد آماده (بازیابی از سرور) + بالا بردن شمارندهٔ نام عکس هر اشتراک: bumps = { اشتراک: حداقل شمارنده } */
+  addMany: (list, bumps = {}) =>
+    tx(["records", "counters"], "readwrite", async ({ records, counters }) => {
+      for (const rec of list) await wrap(records.add(rec));
+      for (const key of Object.keys(bumps)) {
+        const row = (await wrap(counters.get(key))) || { eshterak: key, count: 0 };
+        if (bumps[key] > row.count) { row.count = bumps[key]; await wrap(counters.put(row)); }
+      }
+      return list.length;
+    }),
 };
 
 /**

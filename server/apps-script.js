@@ -25,6 +25,9 @@
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
  *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
  *
+ * نسخه ۴.۷ — myRecords: «بازیابی از سرور» (برای هر اکیپ؛ فقط توکن برنامه + کد کاربر) رکوردهای ۶۰ روز اخیر همان کاربر را (بدون عکس/لینک) برمی‌گرداند
+ *  تا بعد از پاک شدن اطلاعات برنامه، بایگانی و «اخطارهای در جریان» دوباره ساخته شود.
+ *
  * نسخه ۴.۶ — اخطارها: دو ستون جدید «مهلت اخطار» (۲۴) و «وضعیت» (۲۵)؛ رکورد تعیین‌تکلیف (resolvesUid) وضعیت اخطار اصلی را «تعیین تکلیف با …» می‌کند؛
  *  groupReport اخطارها را از عملکرد جدا می‌کند (در جریان / پایان مهلت / تعیین تکلیف شده)؛ وضعیت «پایان مهلت» با زمان ثبت + مهلت محاسبه می‌شود.
  *
@@ -54,6 +57,9 @@ const SETTINGS = {
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
   PHOTOS_PER_CALL: 20,      // حداکثر تعداد عکس در هر درخواست getPhotos (عکس‌ها هم‌زمان خوانده می‌شوند)
   MAX_BATCH: 5,             // حداکثر تعداد رکورد در هر درخواست submitBatch
+  MY_DAYS: 60,              // «بازیابی از سرور»: پیش‌فرض چند روز اخیر
+  MY_DAYS_MAX: 120,         // بیشترین بازهٔ قابل درخواست (روز)
+  MY_LIMIT: 3000,           // سقف تعداد رکورد در یک بازیابی
 };
 // ====================================================
 
@@ -83,7 +89,7 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 46, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 47, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -105,6 +111,8 @@ function doPost(e) {
       const list = (data.records || []).slice(0, SETTINGS.MAX_BATCH);
       return json_({ ok: true, results: submitBatch_(list) });
     }
+    // بازیابی رکوردهای خود کاربر (فقط خواندن؛ بدون قفل)
+    if (data.action === "myRecords") return json_(myRecords_(data));
     return json_({ ok: false, error: "action نامعتبر" });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message ? err.message : err) });
@@ -755,6 +763,43 @@ function listRecords_(data) {
   out.ms = Date.now() - t0;
   sweepExpired_();
   return out;
+}
+
+/**
+ * «بازیابی از سرور»: رکوردهای N روز اخیر «همان کاربر» (بر اساس زمان ثبت در سرور) — بدون لینک عکس.
+ * فقط ردیف‌های انتهای شیت خوانده می‌شوند (ردیف‌ها به ترتیب زمان ثبت هستند)؛ پاسخ جدیدترین اول.
+ * وضعیت اخطار (در جریان / پایان مهلت / تعیین تکلیف با …) همان لحظه محاسبه می‌شود (warnStatus).
+ */
+function myRecords_(data) {
+  const t0 = Date.now();
+  const code = codeKey_(data.userCode);
+  if (!code) return { ok: false, error: "کد کاربر مشخص نیست" };
+  const days = Math.min(Math.max(Number(data.days) || SETTINGS.MY_DAYS, 1), SETTINGS.MY_DAYS_MAX);
+  const cutoff = Date.now() - days * 86400000;
+  const sheet = getSheet_();
+  const last = sheet.getLastRow();
+  if (last < 2) return { ok: true, days: days, total: 0, records: [], ms: Date.now() - t0 };
+  const n = last - 1;
+  // ستون زمان ثبت سرور: اولین ردیفی که از cutoff جدیدتر است (از انتها به عقب؛ نزدیک به انتها می‌ایستد)
+  const tcol = sheet.getRange(2, 1, n, 1).getValues();
+  let first = n;
+  for (let i = n - 1; i >= 0; i--) {
+    const t = tcol[i][0];
+    if (t instanceof Date && t.getTime() < cutoff) break;
+    first = i;
+  }
+  const count = n - first;
+  const out = [];
+  if (count > 0) {
+    const rows = readBlock_(sheet, 2 + first, count, "nolinks");
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (!r[1] || codeKey_(r[2]) !== code) continue;
+      out.push(rowToRecord_(r, true));
+      if (out.length >= SETTINGS.MY_LIMIT) break;
+    }
+  }
+  return { ok: true, days: days, total: out.length, records: out, ms: Date.now() - t0 };
 }
 
 function getSummary_(data) {

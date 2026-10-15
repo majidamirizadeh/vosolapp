@@ -1,5 +1,6 @@
 /** مؤلفه‌های مشترک رابط کاربری: پیام، تأیید، وضعیت در حال کار */
 import { h } from "./utils.js";
+import { feedback } from "./feedback.js";
 
 function host() {
   let el = document.getElementById("overlay-host");
@@ -18,6 +19,7 @@ export function toast(message, type = "info", opts = {}) {
     t.append(h("button", { type: "button", class: "toast-btn", onclick: () => { opts.action.run(); t.remove(); } }, opts.action.label));
   }
   box.append(t);
+  if (type === "success" || type === "error") feedback(type); // صدا/لرزش (طبق تنظیمات) — در همهٔ پیام‌های موفقیت و خطا
   const ms = opts.sticky ? 0 : opts.ms || (type === "error" ? 6000 : 3200);
   if (ms) setTimeout(() => t.remove(), ms);
   return t;

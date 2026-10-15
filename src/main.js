@@ -2,7 +2,7 @@
  * نقطه شروع برنامه — فقط ماژول‌ها را به‌هم وصل می‌کند.
  */
 import { CONFIG } from "../config/app.config.js";
-import { openDB } from "./core/db.js";
+import { openDB, kv } from "./core/db.js";
 import { bus, EV } from "./core/bus.js";
 import { loadPrefs, getPref, setPrefsLocked } from "./core/prefs.js";
 import { createRouter } from "./core/router.js";
@@ -12,6 +12,9 @@ import { ICONS } from "./core/icons.js";
 import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./modules/auth.js";
 import { showLogin } from "./modules/login.js";
 import { migrateLegacy, listFor, pendingResolutionFor } from "./modules/records.js";
+import { mountUnsentBar, watchWarnings } from "./modules/unsentbar.js";
+import { feedback, unlockAudio } from "./core/feedback.js";
+import { runRestore } from "./modules/settings.js";
 import { loadHandle, requestPersistence, status as folderStatus, folderApiSupported } from "./modules/storage.js";
 import { showWelcome } from "./modules/welcome.js";
 import { ensureFonts } from "./modules/photos.js";
@@ -152,6 +155,7 @@ function setupNetwork() {
   };
   window.addEventListener("online", async () => {
     update();
+    feedback("online");
     if (user && getPref("autoSync") && serverConfigured() && canSend(user)) { // حساب تست هرگز ارسال خودکار ندارد
       const list = await listFor(user, { allUsers: getPref("allUsersOnPhone") });
       const ids = list.filter((r) => r.status === "pending").map((r) => r.id);
@@ -161,7 +165,7 @@ function setupNetwork() {
       }
     }
   });
-  window.addEventListener("offline", update);
+  window.addEventListener("offline", () => { update(); feedback("alert"); });
   update();
 }
 
@@ -225,6 +229,22 @@ function setupBackGuard(router) {
   window.addEventListener("popstate", onPop);
 }
 
+/**
+ * اگر روی این گوشی هیچ رکوردی برای این کاربر نیست (مثلاً بعد از پاک شدن اطلاعات برنامه) و اینترنت هست،
+ * یک‌بار برای هر کاربر پیشنهاد بازیابی ۶۰ روز اخیر از سرور داده می‌شود (بعداً هم از «تنظیمات» قابل انجام است).
+ */
+async function offerRestore(u) {
+  try {
+    if (!canSend(u) || isAdmin(u) || !serverConfigured() || !navigator.onLine) return;
+    const key = "restoreOffered:" + u.code;
+    if (await kv.get(key)) return;
+    const mine = await listFor(u, { allUsers: false });
+    if (mine.length) { await kv.set(key, 1); return; } // گوشی داده دارد؛ پیشنهاد لازم نیست
+    await kv.set(key, 1);
+    if (await confirmBox("روی این گوشی هنوز اطلاعاتی از شما نیست.\nموارد ۶۰ روز اخیرِ ارسال‌شده از سرور بازیابی شود؟\n(عکس‌ها بازیابی نمی‌شوند)", { yes: "بازیابی", no: "فعلاً نه", title: "بازیابی از سرور" })) await runRestore(u);
+  } catch { /* بی‌اثر */ }
+}
+
 async function start() {
   document.title = CONFIG.appName;
   document.getElementById("appTitle").textContent = CONFIG.appName;
@@ -243,6 +263,7 @@ async function start() {
   setupInstallPrompt(); // هر بار باز شدن: اگر نصب نشده بود پیام نصب (بدون انتظار برای ورود)
   ensureFonts();
   setupNetwork();
+  unlockAudio(); // صدا بعد از اولین لمس کاربر آماده می‌شود
 
   user = currentUser();
   const justLoggedIn = !user;
@@ -276,9 +297,10 @@ async function start() {
     if (await form.startResolve(rec)) { await router.show("form"); form.resolveHint(); }
   };
 
+  const archiveMod = createArchiveModule({ getUser, onEdit, onResolve });
   const modules = [
     form,
-    createArchiveModule({ getUser, onEdit, onResolve }),
+    archiveMod,
     createReportsModule({ getUser }),
     ...(isAdmin(user) ? [createAdminModule({ getUser })] : []), // فقط ادمین
     createDownloadsModule(),
@@ -289,8 +311,11 @@ async function start() {
   document.getElementById("app").hidden = false;
   setupMenu({ router, userLabel, doLogout });
   setupBackGuard(router);
+  mountUnsentBar({ anchor: document.getElementById("view"), getUser, goArchive: () => router.show("archive") });
+  watchWarnings({ getUser, goWarnings: () => { archiveMod.openWarnings(); router.show("archive"); } });
   await router.show("form");
   router.refreshBadges();
+  offerRestore(user); // گوشی خالی (بعد از پاک شدن اطلاعات یا گوشی جدید) → پیشنهاد بازیابی از سرور
   window.__app = { router, getUser };
 }
 

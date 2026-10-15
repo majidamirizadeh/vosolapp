@@ -53,6 +53,100 @@ export async function pendingResolutionFor(warnUid) {
   return all.find((r) => r.resolvesUid === warnUid && r.status === "pending") || null;
 }
 
+/** شمارندهٔ نام عکس از نام فایل‌های سرور: 123.jpg → ۱ ؛ 123_3.jpg → ۳ */
+function photoCounterOf(names) {
+  let max = 0;
+  for (const n of String(names || "").split("،")) {
+    const m = n.trim().match(/_(\d+)\.[a-z0-9]+$/i);
+    max = Math.max(max, m ? Number(m[1]) : n.trim() ? 1 : 0);
+  }
+  return max;
+}
+
+/** ISO از «زمان ثبت در گوشی» یا (اگر نبود) «زمان ثبت سرور» */
+function isoOf(a, b) {
+  for (const v of [a, b]) {
+    if (!v) continue;
+    const d = new Date(String(v).includes("T") ? v : String(v).replace(" ", "T"));
+    if (!isNaN(d)) return d.toISOString();
+  }
+  return new Date().toISOString();
+}
+
+/**
+ * «بازیابی از سرور»: رکوردهای برگشتی سرور (myRecords) را به بایگانی گوشی اضافه می‌کند.
+ * - رکوردی که uid آن روی گوشی هست دوباره ساخته نمی‌شود (فقط اگر اخطار روی سرور تعیین تکلیف شده بود، همین‌جا هم بسته می‌شود).
+ * - رکوردهای بازیابی‌شده «ارسال‌شده» هستند و عکس ندارند (عکس‌ها فقط در سرور می‌مانند)؛ اخطارهای در جریان در بخش «اخطارهای در جریان» برمی‌گردند.
+ * @returns {{added:number, existing:number, skipped:number}}
+ */
+export async function restoreFromServer(user, list) {
+  const local = await db.records.all();
+  const byUid = new Map(local.map((r) => [r.uid, r]));
+  const modeOf = (title) => Object.keys(MODES).find((k) => MODES[k].title === title) || null;
+  const prefix = "تعیین تکلیف با ";
+  const add = [], bumps = {};
+  let existing = 0, skipped = 0, closed = 0;
+
+  for (const s of list || []) {
+    if (!s || !s.uid) { skipped++; continue; }
+    const st = String(s.warnStatus || "");
+    const doneWith = st.startsWith(prefix) ? st.slice(prefix.length).trim() : "";
+    const have = byUid.get(s.uid);
+    if (have) {
+      existing++;
+      if (have.mode === "warning" && doneWith && !have.resolved) {
+        await db.records.update(have.id, { resolved: { uid: "", modeTitle: doneWith, at: "" } });
+        closed++;
+      }
+      continue;
+    }
+    const mode = modeOf(s.modeTitle);
+    const key = subscriptionKey(s.eshterak);
+    if (!mode || !key) { skipped++; continue; }
+    const isWarn = mode === "warning";
+    const dl = isWarn ? WARNING_DEADLINES.find((x) => x.label === String(s.deadline || "").trim()) : null;
+    add.push({
+      uid: s.uid,
+      userCode: user.code,
+      userName: user.name,
+      mode,
+      modeTitle: s.modeTitle,
+      date: s.date,
+      omoor: s.omoor || "",
+      city: s.city || "",
+      abadi: s.abadi || "",
+      leader: s.leader || "",
+      eshterak: key,
+      amount: Number(s.amount) || 0,
+      note: s.note || "",
+      deadlineHours: dl ? dl.value : null,
+      deadlineLabel: dl ? dl.label : "",
+      ...(isWarn && doneWith ? { resolved: { uid: "", modeTitle: doneWith, at: "" } } : {}),
+      ...(st === "تعیین تکلیف شده از صدور اخطار" ? { resolvesUid: "server" } : {}),
+      gpsLat: s.gpsLat ?? null,
+      gpsLng: s.gpsLng ?? null,
+      gpsAccuracy: s.gpsAccuracy ?? null,
+      photos: [],
+      photoCount: Number(s.photoCount) || 0,
+      photoNames: s.photoNames || "",
+      status: "sent",
+      deviceSaved: false,
+      restored: true,
+      createdAt: isoOf(s.createdAt, s.serverTime),
+      sentAt: isoOf(s.serverTime, s.createdAt),
+    });
+    const c = photoCounterOf(s.photoNames);
+    if (c) bumps[key] = Math.max(bumps[key] || 0, c);
+  }
+  // قدیمی‌ترین اول تا شناسهٔ محلی (id) با ترتیب زمانی جور باشد (سرور جدیدترین‌ها را اول می‌دهد)
+  add.reverse();
+  if (add.length || closed) {
+    if (add.length) await db.records.addMany(add, bumps);
+    bus.emit(EV.RECORDS_CHANGED);
+  }
+  return { added: add.length, existing, skipped };
+}
+
 /**
  * @param {object} data   فیلدهای فرم + user + mode + gps
  * @param {{blob:Blob,width:number,height:number}[]} photos  عکس‌های مهرخورده

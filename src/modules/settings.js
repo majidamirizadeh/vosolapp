@@ -3,12 +3,33 @@
  */
 import { CONFIG } from "../../config/app.config.js";
 import { h, formatBytes, toPersianDigits } from "../core/utils.js";
-import { alertBox, confirmBox, toast } from "../core/ui.js";
+import { alertBox, confirmBox, toast, busy } from "../core/ui.js";
 import { getPref, setPref, isPrefLocked } from "../core/prefs.js";
 import { bus, EV } from "../core/bus.js";
 import { pickFolder, clearFolder, status, usage, requestPersistence, folderApiSupported } from "./storage.js";
-import { userCount } from "./auth.js";
+import { userCount, canSend } from "./auth.js";
+import { restoreMyRecords, serverConfigured } from "./sync.js";
 import { ICONS } from "../core/icons.js";
+import { feedback, vibrationSupported } from "../core/feedback.js";
+
+const RESTORE_DAYS = 60;
+
+/** اجرای بازیابی از سرور با نوار پیشرفت و پیام نتیجه */
+export async function runRestore(user, { silent = false } = {}) {
+  if (!serverConfigured()) { if (!silent) await alertBox("آدرس/توکن سرور تنظیم نشده است."); return null; }
+  if (!navigator.onLine) { if (!silent) await alertBox("دستگاه آفلاین است. با اینترنت دوباره تلاش کنید."); return null; }
+  const b = busy("در حال دریافت اطلاعات از سرور…");
+  const out = await restoreMyRecords(user, RESTORE_DAYS);
+  b.done();
+  if (!out.ok) { await alertBox(out.error, "بازیابی ناموفق"); return null; }
+  await alertBox(
+    out.added
+      ? `${toPersianDigits(out.added)} مورد بازیابی شد.\n(${toPersianDigits(out.existing)} مورد از قبل روی گوشی بود)\nمواردِ ارسال‌شده در «بایگانی» و اخطارهای تعیین‌تکلیف‌نشده در «اخطارهای در جریان» هستند.`
+      : out.total ? "همهٔ موارد از قبل روی گوشی بود؛ چیزی اضافه نشد." : `در ${toPersianDigits(RESTORE_DAYS)} روز اخیر موردی برای این کاربر در سرور ثبت نشده است.`,
+    "بازیابی از سرور"
+  );
+  return out;
+}
 
 export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
   let box;
@@ -18,6 +39,10 @@ export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
     const input = h("input", { type: "checkbox", checked: !!getPref(key), disabled: lock, onchange: (e) => setPref(key, e.target.checked).then(() => bus.emit(EV.RECORDS_CHANGED)) });
     return h("label", { class: "switch-row" + (lock ? " locked" : "") }, h("div", {}, h("div", { class: "sw-title" }, label), h("div", { class: "info-text" }, hint + (lock ? " (این گزینه همیشه روشن است و فقط ادمین می‌تواند تغییرش دهد.)" : ""))), input);
   };
+
+  async function restore(u) {
+    await runRestore(u);
+  }
 
   async function render() {
     box.replaceChildren();
@@ -49,9 +74,25 @@ export function createSettingsModule({ getUser, onLogout, checkUpdate }) {
         )
       ),
       h("div", { class: "card" },
+        h("h3", { class: "card-title" }, "صدا و لرزش"),
+        toggle("صدا", "بوق کوتاه برای ذخیره موفق، خطا، گرفتن عکس، ارسال، پایان مهلت اخطار و وصل/قطع شدن اینترنت (برای وقتی که صفحه را درست نمی‌بینید).", "sound"),
+        toggle("لرزش", vibrationSupported() ? "همین رویدادها با لرزش گوشی هم اعلام شوند (پیش‌فرض خاموش)." : "این مرورگر/گوشی از لرزش پشتیبانی نمی‌کند.", "vibrate"),
+        h("div", { class: "btn-row" },
+          h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => feedback("success") }, "آزمایش: موفق"),
+          h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => feedback("error") }, "آزمایش: خطا"),
+          h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => feedback("alert") }, "آزمایش: هشدار")
+        ),
+        h("p", { class: "info-text" }, "اگر صدا نیامد: گوشی را از حالت بی‌صدا خارج کنید و بلندی «رسانه» را بالا ببرید.")
+      ),
+      h("div", { class: "card" },
         h("h3", { class: "card-title" }, "ارسال به سرور"),
         toggle("ارسال خودکار هنگام اتصال به اینترنت", "به‌محض آنلاین شدن، موارد ارسال‌نشده خودکار ارسال می‌شوند.", "autoSync"),
         toggle("نمایش اطلاعات همه کاربران این گوشی", "اگر چند نفر از یک گوشی استفاده می‌کنند، بایگانی و گزارش همه را نشان می‌دهد.", "allUsersOnPhone")
+      ),
+      canSend(u) && h("div", { class: "card" },
+        h("h3", { class: "card-title" }, "بازیابی اطلاعات از سرور"),
+        h("p", { class: "info-text" }, `اگر اطلاعات برنامه روی گوشی پاک شد (یا گوشی عوض شد)، موارد ${toPersianDigits(RESTORE_DAYS)} روز اخیر که قبلاً به سرور ارسال کرده‌اید دوباره در «بایگانی» و «اخطارهای در جریان» برمی‌گردد. عکس‌ها بازیابی نمی‌شوند (در سرور محفوظ‌اند) و مواردی که ارسال نشده بودند قابل بازیابی نیستند.`),
+        h("button", { type: "button", class: "btn btn-primary", onclick: () => restore(u) }, "بازیابی ۶۰ روز اخیر از سرور")
       ),
       h("div", { class: "card" },
         h("h3", { class: "card-title" }, "درباره برنامه"),

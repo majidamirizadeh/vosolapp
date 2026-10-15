@@ -10,6 +10,7 @@ import { h, toLatinDigits, toPersianDigits, normalizeText, formatMoney } from ".
 import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
 import { kv } from "../core/db.js";
 import { getPref } from "../core/prefs.js";
+import { feedback } from "../core/feedback.js";
 import { downscale, stampPhoto } from "./photos.js";
 import { createRecord, updateRecord, markDeviceSaved, pendingResolutionFor } from "./records.js";
 import { saveFiles } from "./storage.js";
@@ -125,6 +126,7 @@ export function createFormModule({ getUser, onEditDone }) {
       if (state.photos[i]) URL.revokeObjectURL(state.photos[i].url);
       state.photos[i] = { blob, width, height, url: URL.createObjectURL(blob) };
       renderPhotos();
+      feedback("photo");
     } catch (e) {
       toast("خواندن عکس ممکن نشد", "error");
     } finally {
@@ -524,6 +526,7 @@ export function createFormModule({ getUser, onEditDone }) {
       const sendNote = auto
         ? "در حال ارسال خودکار به سرور… (وضعیت در تب «بایگانی»)"
         : wasEdit ? "هنوز ارسال نشده است؛ از تب «بایگانی» ارسال کنید." : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید.";
+      feedback("success");
       await alertBox(
         `${wasEdit ? "✅ تغییرات ذخیره شد" : "✅ ذخیره شد"}${saveNote}\n\nعکس‌ها:\n${rec.photos.map((p) => p.name).join("\n")}\n\n${sendNote}`,
         wasEdit ? "ویرایش موفق" : "ثبت موفق"
@@ -535,6 +538,7 @@ export function createFormModule({ getUser, onEditDone }) {
     } catch (e) {
       b.done();
       console.error(e);
+      feedback("error");
       alertBox("خطا در ذخیره: " + (e.message || e), "خطا");
     } finally {
       saving = false;
@@ -709,6 +713,7 @@ export function createFormModule({ getUser, onEditDone }) {
           toast(res.ok ? "به سرور ارسال شد ✓ — اخطار از «در جریان» خارج شد" : "ارسال خودکار ناموفق بود؛ از تب «بایگانی» دوباره بفرستید", res.ok ? "success" : "error");
         });
       }
+      feedback("success");
       await alertBox(
         `✅ تعیین تکلیف ذخیره شد${saveNote}\n\n${MODES[r.mode].title} — اشتراک ${toPersianDigits(rec.eshterak)}\n\n${auto ? "در حال ارسال خودکار به سرور…" : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید؛ بعد از ارسال، اخطار از «در جریان» خارج می‌شود."}`,
         "تعیین تکلیف اخطار"
@@ -718,6 +723,7 @@ export function createFormModule({ getUser, onEditDone }) {
     } catch (e) {
       b.done();
       console.error(e);
+      feedback("error");
       alertBox("خطا در ذخیره: " + (e.message || e), "خطا");
     } finally {
       saving = false;

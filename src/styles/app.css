@@ -662,3 +662,14 @@ input.dp-input:disabled { cursor: not-allowed; }
 .rec-wait { background: var(--brand-l); color: #07306b; border-radius: 10px; padding: 3px 8px; font-size: .66rem; font-weight: 700; max-width: 120px; text-align: center; line-height: 1.4; }
 .rec-resolved { background: var(--ok-l); color: var(--ok-d); border-radius: 8px; padding: 2px 9px; margin: 3px 0; font-weight: 700; }
 .chev-go { transform: rotate(90deg); }
+
+/* نوار هشدار ارسال‌نشده‌ها */
+.unsent-bar { display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 8px 12px; border-radius: 12px; cursor: pointer;
+  background: var(--brand-l); border: 1px solid #b9d3fb; color: #07306b; font-size: .8rem; line-height: 1.6; }
+.unsent-bar.warn { background: #fff6dd; border-color: #f0d37a; color: #6b4a00; }
+.unsent-bar.danger { background: #fde8e8; border-color: #f1a9a9; color: #8a1111; }
+.unsent-bar .ub-text { flex: 1; }
+.unsent-bar .btn { flex: none; }
+
+/* ردیف دکمه‌ها (تنظیمات) */
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }

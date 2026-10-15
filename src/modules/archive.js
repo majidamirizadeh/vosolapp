@@ -12,6 +12,7 @@ import { sendRecord, sendMany, serverConfigured, TEST_USER_MSG } from "./sync.js
 import { canSend } from "./auth.js";
 import { saveFiles } from "./storage.js";
 import { ICONS } from "../core/icons.js";
+import { feedback } from "../core/feedback.js";
 
 export function createArchiveModule({ getUser, onEdit, onResolve }) {
   let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn, section = "archive", secBtns, segsEl, warnTimer = null;
@@ -146,12 +147,13 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
           r.deadlineLabel && h("div", {}, `مهلت اخطار: ${r.deadlineLabel}`),
           r.resolved && h("div", { class: "rec-resolved" }, `تعیین تکلیف شد با ${r.resolved.modeTitle}`),
           r.resolvesUid && h("div", { class: "rec-resolved" }, "این مورد، تعیین تکلیف یک اخطار است"),
+          r.restored && h("div", { class: "info-text" }, `بازیابی‌شده از سرور — عکس‌ها فقط در سرور هستند${r.photoCount ? " (" + toPersianDigits(r.photoCount) + " عکس)" : ""}`),
           r.note && h("div", { class: "rec-note" }, "توضیحات: " + r.note),
           r.lastError && !sent && h("div", { class: "err" }, "آخرین خطا: " + r.lastError),
           h("div", { class: "thumbs" }, thumbs),
           h("div", { class: "rec-acts" },
             !sent && h("button", { type: "button", class: "btn btn-warning btn-xs", onclick: () => onEdit?.(r) }, "ویرایش"),
-            h("button", { type: "button", class: "btn btn-secondary btn-xs", onclick: () => resave(r) }, "ذخیره عکس‌ها در گوشی"),
+            !r.restored && h("button", { type: "button", class: "btn btn-secondary btn-xs", onclick: () => resave(r) }, "ذخیره عکس‌ها در گوشی"),
             (sent || CONFIG.rules.allowDeletePending) && h("button", { type: "button", class: "btn btn-danger btn-xs", onclick: () => del(r) }, "حذف")
           )
         )
@@ -170,7 +172,7 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
     const res = await sendRecord(id);
     b.done();
     if (res.ok) toast(res.duplicate ? "این مورد قبلاً در سرور ثبت شده بود ✓" : "با موفقیت ارسال شد ✓", "success");
-    else await alertBox(res.error, "ارسال ناموفق");
+    else { feedback("error"); await alertBox(res.error, "ارسال ناموفق"); }
   }
 
   async function sendAll() {
@@ -184,6 +186,7 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
     const out = await sendMany(ids, ({ index, total }) => { b.text(`ارسال ${toPersianDigits(index)} از ${toPersianDigits(total)}`); b.progress(index / total); });
     b.done();
     const msg = `${toPersianDigits(out.ok)} مورد ارسال شد` + (out.failed ? `\n${toPersianDigits(out.failed)} مورد ناموفق ماند\n${out.lastError}` : "");
+    feedback(out.failed ? "error" : "success");
     await alertBox(msg, out.failed ? "ارسال ناقص" : "ارسال کامل");
   }
 
@@ -237,5 +240,7 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
       warnTimer = setInterval(() => { if (section === "warn") render(); }, 60000); // زمان باقی‌مانده و قرمز شدن بعد از مهلت
     },
     onHide() { revoke(); clearInterval(warnTimer); warnTimer = null; },
+    /** باز کردن بخش «اخطارهای در جریان» (از هشدار صوتی/پیام پایان مهلت) */
+    openWarnings() { section = "warn"; },
   };
 }
