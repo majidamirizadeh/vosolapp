@@ -9,12 +9,13 @@
 import { getPref } from "./prefs.js";
 
 const TONES = {
-  // [فرکانس Hz ، شروع (ثانیه) ، طول (ثانیه) ، نوع موج ، بلندی]
-  success: [[880, 0, 0.09, "sine", 0.9], [1320, 0.1, 0.16, "sine", 0.9]],
-  error: [[240, 0, 0.17, "square", 0.45], [200, 0.22, 0.24, "square", 0.45]],
-  photo: [[1500, 0, 0.04, "triangle", 0.8], [900, 0.045, 0.05, "triangle", 0.6]],
-  alert: [[784, 0, 0.14, "sine", 0.85], [988, 0.18, 0.14, "sine", 0.85], [784, 0.36, 0.2, "sine", 0.85]],
-  online: [[523, 0, 0.08, "sine", 0.6], [784, 0.1, 0.12, "sine", 0.6]],
+  // [فرکانس Hz ، شروع (ثانیه) ، طول (ثانیه) ، نوع موج]
+  // موج مربعی (انرژی بیشتر = بلندتر) و فرکانس‌های ۰٫۵ تا ۲ کیلوهرتز (جایی که بلندگوی گوشی و گوش انسان بیشترین حساسیت را دارند)
+  success: [[1568, 0, 0.12, "square"], [2093, 0.14, 0.24, "square"]],
+  error: [[700, 0, 0.22, "square"], [500, 0.27, 0.3, "square"], [700, 0.62, 0.22, "square"]],
+  photo: [[2000, 0, 0.06, "square"], [1200, 0.07, 0.08, "square"]],
+  alert: [[1000, 0, 0.16, "square"], [1400, 0.18, 0.16, "square"], [1000, 0.36, 0.16, "square"], [1400, 0.54, 0.16, "square"], [1000, 0.72, 0.3, "square"]],
+  online: [[1047, 0, 0.1, "square"], [1568, 0.12, 0.18, "square"]],
 };
 const VIBES = {
   success: [60],
@@ -23,7 +24,7 @@ const VIBES = {
   alert: [100, 60, 100, 60, 100],
   online: [40],
 };
-const MASTER = 0.3; // بلندی کلی (متوسط؛ برای محیط عمومی مزاحم نباشد)
+const MASTER = 1; // بلندی کلی: حداکثر (۱ = بالاترین سطح دیجیتال؛ بلندی نهایی را «بلندی رسانه»ی گوشی تعیین می‌کند)
 
 let ctx = null;
 
@@ -52,15 +53,16 @@ function beep(kind) {
   const ac = audio();
   if (!ac || ac.state !== "running") return;
   const t0 = ac.currentTime + 0.01;
-  for (const [freq, at, dur, type, vol] of TONES[kind] || []) {
+  for (const [freq, at, dur, type] of TONES[kind] || []) {
     const osc = ac.createOscillator();
     const g = ac.createGain();
     osc.type = type;
     osc.frequency.value = freq;
     const s = t0 + at, e = s + dur;
-    g.gain.setValueAtTime(0.0001, s);
-    g.gain.exponentialRampToValueAtTime(MASTER * vol, s + 0.01); // شروع نرم (بدون تق)
-    g.gain.exponentialRampToValueAtTime(0.0001, e);
+    g.gain.setValueAtTime(0, s);
+    g.gain.linearRampToValueAtTime(MASTER, s + 0.004); // شروع خیلی کوتاه و نرم (بدون تق) و بعد تا آخر در بالاترین سطح
+    g.gain.setValueAtTime(MASTER, Math.max(s + 0.005, e - 0.012));
+    g.gain.linearRampToValueAtTime(0, e);
     osc.connect(g).connect(ac.destination);
     osc.start(s);
     osc.stop(e + 0.02);
