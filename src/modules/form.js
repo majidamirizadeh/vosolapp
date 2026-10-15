@@ -601,6 +601,14 @@ export function createFormModule({ getUser, onEditDone }) {
     modeSel.value = r.mode || "";
     modeSel.dataset.mode = r.mode || "";
     if (r.mode) { state.mode = r.mode; amountLabelEl.firstChild.textContent = mode().amountLabel; }
+    // مبلغ: فقط برای «وصول مطالبات» آزاد است (باید مبلغ وصول‌شده وارد شود)؛ برای بقیه عملیات‌ها قفل و همان مبلغ اخطار می‌ماند
+    const amt = state.inputs.amount;
+    if (r.mode === "collect") {
+      if (amt.disabled) { amt.disabled = false; amt.value = ""; }
+    } else {
+      amt.disabled = true;
+      amt.value = r.warn.amount ? Number(r.warn.amount).toLocaleString("en-US") : "";
+    }
     refreshResolveBanner();
   }
 
@@ -659,7 +667,7 @@ export function createFormModule({ getUser, onEditDone }) {
   /** پیام راهنما بعد از باز شدن تب فرم (از main.js صدا زده می‌شود) */
   function resolveHint() {
     if (state.resolving && !state.resolving.mode)
-      alertBox("عملیات جدید را از فهرست «نوع عملیات» (بالای فرم) انتخاب کنید.\n\nفقط «تاریخ» و «عکس‌های جدید» قابل ویرایش‌اند؛ حداقل یک عکس جدید لازم است.", "تعیین تکلیف اخطار");
+      alertBox("عملیات جدید را از فهرست «نوع عملیات» (بالای فرم) انتخاب کنید.\n\nفقط «تاریخ» و «عکس‌های جدید» قابل ویرایش‌اند (اگر «وصول مطالبات» را انتخاب کنید، «مبلغ وصول» هم آزاد می‌شود)؛ حداقل یک عکس جدید لازم است.", "تعیین تکلیف اخطار");
   }
 
   async function endResolve() {
@@ -681,6 +689,7 @@ export function createFormModule({ getUser, onEditDone }) {
     if (!r.mode) return toast("ابتدا «عملیات جدید» را انتخاب کنید", "error");
     const v = readValues();
     if (!v.date) return toast("«تاریخ» نامعتبر است (مثال: 1405/07/15)", "error");
+    if (r.mode === "collect" && !(Number(v.amount) > 0)) return toast("«مبلغ وصول» را وارد کنید", "error");
     const fresh = state.photos.filter((p) => p && !p.existing);
     if (!fresh.length) return toast("حداقل یک عکس جدید لازم است", "error");
     const dup = await pendingResolutionFor(r.warn.uid);

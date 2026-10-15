@@ -673,3 +673,11 @@ input.dp-input:disabled { cursor: not-allowed; }
 
 /* ردیف دکمه‌ها (تنظیمات) */
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+
+/* گزارش ریز ادمین */
+.detail-table { min-width: 880px; }
+.detail-table th { background: var(--brand); color: #fff; padding: 7px 6px; font-weight: 700; white-space: nowrap; text-align: center; }
+.detail-table td { white-space: nowrap; }
+.detail-table tr.d-open td { background: #fff7e0; }
+.detail-table tr.d-exp td { background: #fdecec; }
+.detail-table .d-links a { display: inline-block; margin: 0 4px; color: #0b5ed7; text-decoration: underline; font-weight: 700; }

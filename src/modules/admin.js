@@ -35,6 +35,10 @@ const GROUPS = [
   { value: "leader", label: "سرگروه" },
 ];
 
+/** گزارش ریز (با لینک عکس): فقط بازهٔ کوتاه و تعداد محدود */
+const DETAIL_MAX_DAYS = 2;
+const DETAIL_MAX_ROWS = 200;
+
 const COLLATOR = new Intl.Collator("fa"); // مرتب‌سازی با Collator چند برابر سریع‌تر از localeCompare است
 
 function sortRecords(list, key) {
@@ -164,7 +168,7 @@ function createAdaptivePool({ start = 4, min = 2, max = 6, gain = 1.1 } = {}) {
 }
 
 export function createAdminModule({ getUser }) {
-  let f = {}, result, links, gr = null; // gr: آخرین خلاصهٔ گروه‌بندی‌شده برای نمایش (بدون دریافت دوباره با تغییر گروه‌بندی)
+  let f = {}, result, links, gr = null, detailResult, detailInfo; // gr: آخرین خلاصهٔ گروه‌بندی‌شده برای نمایش (بدون دریافت دوباره با تغییر گروه‌بندی)
 
   /** فیلترها → پارامترهای سرور؛ null = خطا */
   function readFilters() {
@@ -997,6 +1001,232 @@ export function createAdminModule({ getUser }) {
 
   const field = (label, el) => h("div", { class: "field" }, h("label", {}, label), el);
 
+
+  /* ═════════ گزارش ریز (نمایش + PDF) با لینک فعال عکس‌ها ═════════
+   * فقط برای بازهٔ تاریخ مشخص (حداکثر ۲ روز) و حداکثر ۲۰۰ رکورد؛ بیشتر از ۲۰۰ رکورد نمایش داده نمی‌شود.
+   * از همان فیلترهای بالا استفاده می‌کند. لینک عکس‌ها: در نمایش = <a> ؛ در PDF = ناحیهٔ لینک‌دار (Link annotation) روی «عکس ۱…۴».
+   */
+  let detail = null; // { recs, filters, t } آخرین گزارش ریز (۲ دقیقه) برای اینکه نمایش و PDF پشت‌سرهم دوبار از سرور نخوانند
+  const safeUrl = (u) => (/^https:\/\/[^\s]+$/i.test(String(u || "")) ? String(u) : "");
+
+  /** شرایط گزارش ریز → فیلترها یا null (با پیام) */
+  function detailGate() {
+    const p = readFilters();
+    if (!p) return null;
+    if (f.all.checked || !p.fromDate) {
+      alertBox(`گزارش ریز فقط برای یک بازهٔ تاریخ مشخص است (حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز).\n«همه بازه» را بردارید و از/تا را وارد کنید.`, "بازه انتخاب نشده");
+      return null;
+    }
+    const days = jalaliSpanDays(p.fromDate, p.toDate);
+    if (!(days >= 1) || days > DETAIL_MAX_DAYS) {
+      alertBox(`بازهٔ گزارش ریز حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز است.\nبازهٔ انتخابی شما ${toPersianDigits(Number.isFinite(days) ? days : 0)} روز است.`, "بازه بیش از حد مجاز");
+      return null;
+    }
+    return p;
+  }
+
+  /** دریافت رکوردها (لینک‌ها هم) — اگر بیشتر از ۲۰۰ تا بود چیزی برنمی‌گرداند */
+  async function fetchDetail(j, step) {
+    const p = detailGate();
+    if (!p) return null;
+    const key = JSON.stringify(p);
+    let recs;
+    if (detail && detail.key === key && Date.now() - detail.t < CACHE_MS) {
+      recs = detail.recs;
+      j.step(step, "استفاده از گزارش ریز دریافت‌شده…");
+      j.mark("فهرست (از حافظه)");
+    } else {
+      j.step(step, "دریافت گزارش ریز از سرور…");
+      const res = await serverCall("listRecords", { ...p, limit: DETAIL_MAX_ROWS });
+      j.srv(res);
+      if (!res.ok) { await failStage(j, "دریافت گزارش ریز از سرور", res); return null; }
+      j.mark("فهرست");
+      if ((res.total || 0) > DETAIL_MAX_ROWS) {
+        j.done();
+        await alertBox(`در این بازه ${toPersianDigits(res.total)} رکورد هست؛ گزارش ریز حداکثر ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد را نشان می‌دهد و بیشتر از آن نمایش داده نمی‌شود.\n\nفیلتر را محدودتر کنید (یک روز، یک اکیپ، یک امور یا یک نوع عملیات) و دوباره بزنید.`, "بیش از ۲۰۰ رکورد");
+        return { over: res.total };
+      }
+      recs = sortRecords(res.records || [], currentSort());
+      detail = { key, t: Date.now(), recs };
+    }
+    return { recs, filters: p };
+  }
+
+  /** وضعیت ردیف (اخطار: مهلت و وضعیت؛ رکورد تعیین‌تکلیف: همان وضعیت ستون سرور) */
+  function detailStatus(r) {
+    if (r.deadline && r.warnStatus) return `${r.deadline} — ${r.warnStatus}`;
+    return r.warnStatus || r.deadline || "";
+  }
+
+  /** جدول نمایشی ریز با لینک‌های فعال؛ ردیف‌های وضعیت‌دار رنگی */
+  function renderDetail(recs, filters) {
+    detailResult.replaceChildren();
+    if (!recs.length) { detailResult.append(h("p", { class: "muted" }, "برای این فیلترها موردی در سرور نیست.")); return; }
+    const cols = ["#", "تاریخ", "اکیپ", "امور", "شهر/بخش", "اشتراک", "عملیات", "مبلغ (ریال)", "وضعیت", "عکس‌ها"];
+    const nLinks = recs.reduce((t, r) => t + (r.photoLinks || []).filter(safeUrl).length, 0);
+    detailResult.append(
+      h("p", { class: "info-text" }, `${toPersianDigits(recs.length)} رکورد — بازه ${toPersianDigits(filters.fromDate)} تا ${toPersianDigits(filters.toDate)} — ${toPersianDigits(nLinks)} لینک عکس (با لمس در مرورگر باز می‌شود؛ برای دیدن عکس‌ها باید با حساب گوگلِ دارای دسترسی به Drive وارد باشید).`),
+      h("div", { class: "table-scroll" },
+        h("table", { class: "mini-table detail-table" },
+          h("thead", {}, h("tr", {}, cols.map((c) => h("th", {}, c)))),
+          h("tbody", {}, recs.map((r, i) => {
+            const st = detailStatus(r);
+            const cls = /پایان مهلت/.test(st) ? "d-exp" : /در جریان/.test(st) ? "d-open" : "";
+            return h("tr", { class: cls },
+              h("td", {}, toPersianDigits(i + 1)),
+              h("td", {}, toPersianDigits(r.date)),
+              h("td", {}, r.userName || r.userCode),
+              h("td", {}, r.omoor),
+              h("td", {}, r.city),
+              h("td", { dir: "ltr" }, toPersianDigits(r.eshterak)),
+              h("td", {}, r.modeTitle),
+              h("td", {}, formatMoney(r.amount)),
+              h("td", {}, st),
+              h("td", { class: "d-links" }, (r.photoLinks || []).map((u, k) => {
+                const url = safeUrl(u);
+                return url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, `عکس ${toPersianDigits(k + 1)}`) : null;
+              })));
+          })))));
+  }
+
+  async function showDetail() {
+    if (!detailGate()) return;
+    links.replaceChildren();
+    const j = makeJob(1);
+    try {
+      const got = await fetchDetail(j, 1);
+      if (!got) return;
+      j.done();
+      if (got.over) { detailResult.replaceChildren(h("p", { class: "muted" }, `بیش از ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد (${toPersianDigits(got.over)} مورد) — نمایش داده نشد. فیلتر را محدودتر کنید.`)); return; }
+      renderDetail(got.recs, got.filters);
+      detailInfo.replaceChildren(h("p", { class: "info-text" }, j.summary()));
+    } catch (e) { await failBuild(j, "نمایش گزارش ریز", e); } finally { j.done(); }
+  }
+
+  /** PDF گزارش ریز: جدول ردیف‌ها + «عکس ۱…۴» لینک‌دار */
+  async function buildDetailPdf(recs, filters, onPage) {
+    await ensureFonts();
+    const cols = [
+      { h: "#", w: 60, a: "c" },
+      { h: "تاریخ", w: 135, a: "c" },
+      { h: "اکیپ", w: 150, a: "c" },
+      { h: "امور", w: 190, a: "r" },
+      { h: "شهر/بخش", w: 170, a: "r" },
+      { h: "اشتراک", w: 140, a: "c" },
+      { h: "عملیات", w: 190, a: "r" },
+      { h: "مبلغ (ریال)", w: 150, a: "c" },
+      { h: "وضعیت", w: 235, a: "r" },
+      ...[1, 2, 3, 4].map((n) => ({ h: `عکس ${toPersianDigits(n)}`, w: 85, a: "c", photo: n - 1 })),
+    ];
+    const M = 50, tableW = PW - M * 2;
+    const k = tableW / cols.reduce((t, c) => t + c.w, 0);
+    cols.forEach((c) => (c.w *= k));
+    const ROW = 54, HEAD = 54, TOP_FIRST = 215, TOP_NEXT = 70, BOTTOM = 90;
+    const firstCap = Math.floor((PH - TOP_FIRST - BOTTOM - HEAD) / ROW);
+    const nextCap = Math.floor((PH - TOP_NEXT - BOTTOM - HEAD) / ROW);
+    const pagesRows = [];
+    for (let i = 0; i < recs.length;) {
+      const cap = pagesRows.length === 0 ? firstCap : nextCap;
+      pagesRows.push(recs.slice(i, i + cap));
+      i += cap;
+    }
+    if (!pagesRows.length) pagesRows.push([]);
+
+    const pages = [];
+    let rowNo = 0;
+    for (let p = 0; p < pagesRows.length; p++) {
+      const c = document.createElement("canvas");
+      c.width = PW; c.height = PH;
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, PW, PH);
+      ctx.direction = "rtl"; ctx.textBaseline = "middle";
+      const linkRects = [];
+
+      let y = TOP_NEXT;
+      if (p === 0) {
+        ctx.fillStyle = "#0d6efd"; ctx.fillRect(0, 0, PW, 12);
+        ctx.fillStyle = "#111"; ctx.textAlign = "right";
+        ctx.font = `700 42px ${FONT}`;
+        ctx.fillText("گزارش ریز سرور — اکیپ‌های وصول مطالبات", PW - M, 68);
+        ctx.font = `400 25px ${FONT}`; ctx.fillStyle = "#333";
+        const flt = [filters.omoor && `امور: ${filters.omoor}`, filters.userCode && `اکیپ: ${filters.userCode}`, filters.modeTitle && `عملیات: ${filters.modeTitle}`, filters.eshterak && `اشتراک: ${filters.eshterak}`].filter(Boolean).join("  |  ");
+        ctx.fillText(toPersianDigits(`بازه: ${filters.fromDate} تا ${filters.toDate}   |   ${recs.length} رکورد   |   تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 120);
+        ctx.fillText(toPersianDigits(flt || "بدون فیلتر دیگر"), PW - M, 158);
+        y = TOP_FIRST;
+      }
+      // سربرگ جدول
+      ctx.fillStyle = "#0d6efd"; ctx.fillRect(M, y, tableW, HEAD);
+      let cx = PW - M;
+      ctx.fillStyle = "#fff"; ctx.font = `700 22px ${FONT}`; ctx.textAlign = "center";
+      for (const col of cols) { ctx.fillText(fit(ctx, col.h, col.w - 8), cx - col.w / 2, y + HEAD / 2); cx -= col.w; }
+      y += HEAD;
+
+      pagesRows[p].forEach((r, i) => {
+        rowNo++;
+        const st = detailStatus(r);
+        ctx.fillStyle = /پایان مهلت/.test(st) ? "#fdecec" : /در جریان/.test(st) ? "#fff7e0" : i % 2 ? "#f6f8fb" : "#fff";
+        ctx.fillRect(M, y, tableW, ROW);
+        const vals = [toPersianDigits(rowNo), toPersianDigits(r.date), r.userName || r.userCode, r.omoor, r.city, toPersianDigits(r.eshterak), r.modeTitle, formatMoney(r.amount), st];
+        let x = PW - M;
+        cols.forEach((col, ci) => {
+          const cxm = x - col.w / 2;
+          if (col.photo != null) {
+            const url = safeUrl((r.photoLinks || [])[col.photo]);
+            if (url) {
+              ctx.fillStyle = "#0b5ed7"; ctx.font = `700 21px ${FONT}`; ctx.textAlign = "center";
+              const label = `عکس ${toPersianDigits(col.photo + 1)}`;
+              ctx.fillText(label, cxm, y + ROW / 2);
+              const tw = ctx.measureText(label).width;
+              ctx.fillRect(cxm - tw / 2, y + ROW / 2 + 15, tw, 2); // زیرخط = نشانهٔ لینک
+              linkRects.push({ x: x - col.w, y, w: col.w, h: ROW, url });
+            } else { ctx.fillStyle = "#aaa"; ctx.font = `400 21px ${FONT}`; ctx.textAlign = "center"; ctx.fillText("—", cxm, y + ROW / 2); }
+          } else {
+            ctx.fillStyle = "#222"; ctx.font = `400 22px ${FONT}`;
+            if (col.a === "r") { ctx.textAlign = "right"; ctx.fillText(fit(ctx, vals[ci], col.w - 14), x - 8, y + ROW / 2); }
+            else { ctx.textAlign = "center"; ctx.fillText(fit(ctx, vals[ci], col.w - 10), cxm, y + ROW / 2); }
+          }
+          x -= col.w;
+        });
+        ctx.strokeStyle = "#d9dee6"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(M, y + ROW); ctx.lineTo(M + tableW, y + ROW); ctx.stroke();
+        y += ROW;
+      });
+      if (!recs.length) { ctx.fillStyle = "#666"; ctx.textAlign = "center"; ctx.font = `400 26px ${FONT}`; ctx.fillText("برای این فیلترها موردی ثبت نشده است", PW / 2, y + 50); }
+
+      ctx.fillStyle = "#666"; ctx.font = `400 20px ${FONT}`; ctx.textAlign = "center";
+      ctx.fillText(toPersianDigits(`صفحه ${p + 1} از ${pagesRows.length}`), PW / 2, PH - 36);
+      if (p === 0) { ctx.textAlign = "left"; ctx.fillText("لینک‌ها با لمس باز می‌شوند (نیاز به دسترسی Drive)", M, PH - 36); }
+
+      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", PDF_QUALITY));
+      pages.push({ jpeg: new Uint8Array(await blob.arrayBuffer()), width: PW, height: PH, links: linkRects });
+      if (onPage) { onPage(p + 1, pagesRows.length); await sleep(0); }
+    }
+    return createPdfFromJpegs(pages, { title: "AdminDetailReport" });
+  }
+
+  async function exportDetailPdf() {
+    if (!detailGate()) return;
+    links.replaceChildren();
+    const j = makeJob(3);
+    let stage = "دریافت گزارش ریز از سرور";
+    try {
+      const got = await fetchDetail(j, 1);
+      if (!got) return;
+      if (got.over) { j.done(); return; }
+      if (!got.recs.length) { j.done(); return toast("برای این فیلترها موردی در سرور نیست", "error"); }
+      stage = "ساخت صفحه‌های PDF";
+      j.step(2, "آماده‌سازی فونت و صفحه‌ها…");
+      const blob = await buildDetailPdf(got.recs, got.filters, (i, n) => { j.detail(`ساخت صفحهٔ ${toPersianDigits(i)} از ${toPersianDigits(n)}…`); j.progress(i / n); });
+      j.mark("ساخت صفحه‌ها");
+      stage = "ذخیره فایل";
+      j.step(3, "ذخیرهٔ فایل روی دستگاه…");
+      downloadBlob(blob, `گزارش-ریز_${todayJalali().replace(/\//g, "-")}.pdf`);
+      j.done();
+      detailInfo.replaceChildren(h("p", { class: "info-text" }, j.summary()));
+      toast(`PDF گزارش ریز ذخیره شد (${toPersianDigits(got.recs.length)} رکورد)`, "success");
+    } catch (e) { await failBuild(j, stage, e); } finally { j.done(); }
+  }
+
   return {
     id: "admin",
     title: "گزارش سرور",
@@ -1013,6 +1243,8 @@ export function createAdminModule({ getUser }) {
       f.group = h("select", { onchange: reRenderGroup }, GROUPS.map((g) => h("option", { value: g.value }, g.label)));
       result = h("div", { class: "report-result" });
       links = h("div", { class: "export-links" });
+      detailResult = h("div", { class: "report-result" });
+      detailInfo = h("div", { class: "export-links" });
 
       container.append(
         h("div", { class: "card card-elevated" },
@@ -1038,7 +1270,17 @@ export function createAdminModule({ getUser }) {
           links,
           h("div", { style: "margin-top:8px" }, h("button", { type: "button", class: "btn btn-secondary btn-xs", onclick: clearPhotoCache }, "پاک کردن حافظهٔ عکس‌های دانلودشده"))
         ),
-        h("div", { class: "card card-elevated" }, result)
+        h("div", { class: "card card-elevated" }, result),
+        h("div", { class: "card card-elevated" },
+          h("h3", { class: "card-title" }, "گزارش ریز (با لینک عکس‌ها)"),
+          h("p", { class: "info-text" }, `با همان فیلترهای بالا؛ فقط بازهٔ حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز و حداکثر ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد (بیشتر از آن نمایش داده نمی‌شود). لینک عکس‌ها هم در نمایش و هم در PDF فعال است.`),
+          h("div", { class: "btn-group" },
+            h("button", { type: "button", class: "btn btn-primary", onclick: showDetail }, h("span", { class: "ico-sm", html: ICONS.list }), "نمایش گزارش ریز"),
+            h("button", { type: "button", class: "btn btn-danger", onclick: exportDetailPdf }, h("span", { class: "ico-sm", html: ICONS.pdf }), "PDF گزارش ریز")
+          ),
+          detailInfo,
+          detailResult
+        )
       );
     },
     onShow() {
