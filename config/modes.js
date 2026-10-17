@@ -19,7 +19,7 @@ export const FIELDS = [
   // «شهر/بخش»: فهرست آن به امور انتخاب‌شده بستگی دارد (از config/cities.js)
   { key: "city",     label: "شهر/بخش",    type: "select", required: true, sticky: true, dependsOn: "omoor", optionsMap: CITIES },
   // «آبادی»: دستی پر می‌شود؛ فقط وقتی «شهر/بخش» با «بخش» شروع شود فعال است
-  { key: "abadi",    label: "آبادی",      type: "text",   required: false },
+  { key: "abadi",    label: "آبادی",      type: "text",   required: false, sticky: true },
   { key: "leader",   label: "سرگروه",     type: "text",   required: true, sticky: true },
   { key: "eshterak", label: "شماره اشتراک", type: "digits", required: true, hint: "نام فایل عکس‌ها از همین شماره ساخته می‌شود" },
   { key: "amount",   label: "مبلغ",       type: "money",  required: true, labelByMode: true },
@@ -51,6 +51,7 @@ export const MODES = {
     amountLabel: "مبلغ بدهی (ریال)",
     photoSlots: ["عکس قبل", "عکس حین", "عکس بعد"],
     minPhotos: 1,
+    requireGps: true,   // ثبت موقعیت (GPS) اجباری؛ بعد از GPS_MAX_FAILS تلاش ناموفق، ثبت بدون موقعیت مجاز می‌شود
   },
   unseal: {
     title: "فک پلمپ",
@@ -73,6 +74,9 @@ export const WARNING_DEADLINES = [
   { value: 72, label: "۷۲ ساعت" },
   { value: 168, label: "یک هفته" },
 ];
+
+/** تعداد تلاش ناموفق دریافت GPS (در عملیات‌های با requireGps) تا اجازهٔ ثبت بدون موقعیت */
+export const GPS_MAX_FAILS = 2;
 
 /** تعیین تکلیف اخطار: حداکثر مجموع عکس‌های قبلی + جدید */
 export const RESOLVE_MAX_PHOTOS = 4;

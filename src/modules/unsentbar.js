@@ -10,7 +10,7 @@ import { bus, EV } from "../core/bus.js";
 import { toast, alertBox, busy } from "../core/ui.js";
 import { getPref } from "../core/prefs.js";
 import { feedback } from "../core/feedback.js";
-import { listFor, isActiveWarning, warnState } from "./records.js";
+import { listFor, isActiveWarning, warnState, isSendDue } from "./records.js";
 import { sendMany, serverConfigured } from "./sync.js";
 import { canSend } from "./auth.js";
 
@@ -45,7 +45,14 @@ export function mountUnsentBar({ anchor, getUser, goArchive }) {
     bar.classList.toggle("warn", age >= 12 * HOUR && age < 24 * HOUR);
     bar.classList.toggle("danger", age >= 24 * HOUR);
     if (age >= 24 * HOUR && !danger) { danger = true; feedback("alert"); }
-    text.textContent = `${toPersianDigits(list.length)} مورد ارسال‌نشده — قدیمی‌ترین ${ago(age)} پیش. تا ارسال نشود فقط روی همین گوشی است.`;
+    const waiting = list.filter((r) => !isSendDue(r));
+    if (waiting.length === list.length && getPref("autoSync") && serverConfigured()) {
+      // همه تازه ذخیره شده‌اند: هنوز در مهلت ویرایش (ارسال خودکار با تأخیر)
+      const next = Math.min(...waiting.map((r) => Date.parse(r.sendAfter)));
+      text.textContent = `${toPersianDigits(list.length)} مورد ذخیره شد — ارسال خودکار تا ${ago(Math.max(0, next - Date.now()))} دیگر (تا آن زمان در «بایگانی» قابل ویرایش است).`;
+    } else {
+      text.textContent = `${toPersianDigits(list.length)} مورد ارسال‌نشده — قدیمی‌ترین ${ago(age)} پیش. تا ارسال نشود فقط روی همین گوشی است.`;
+    }
     btn.disabled = !navigator.onLine || !serverConfigured();
     btn.title = navigator.onLine ? "" : "دستگاه آفلاین است";
   }
@@ -63,7 +70,7 @@ export function mountUnsentBar({ anchor, getUser, goArchive }) {
 
   bus.on(EV.RECORDS_CHANGED, refresh);
   bus.on(EV.NET, refresh);
-  setInterval(refresh, 5 * 60000); // رنگ نوار (۱۲/۲۴ ساعت) کند عوض می‌شود؛ بقیه‌ی تغییرات با رویداد می‌آید
+  setInterval(refresh, 30000); // شمارش معکوس ارسال خودکار و رنگ نوار (۱۲/۲۴ ساعت)؛ بقیه‌ی تغییرات با رویداد می‌آید
   refresh();
   return { refresh };
 }

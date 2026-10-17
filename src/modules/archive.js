@@ -2,7 +2,7 @@
  * تب «بایگانی»: فهرست رکوردهای ذخیره‌شده در گوشی، ارسال، ذخیره مجدد عکس‌ها، حذف
  */
 import { CONFIG } from "../../config/app.config.js";
-import { h, toPersianDigits, formatMoney } from "../core/utils.js";
+import { h, toPersianDigits, toLatinDigits, formatMoney } from "../core/utils.js";
 import { alertBox, confirmBox, toast, busy } from "../core/ui.js";
 import { bus, EV } from "../core/bus.js";
 import { getPref } from "../core/prefs.js";
@@ -15,7 +15,7 @@ import { ICONS } from "../core/icons.js";
 import { feedback } from "../core/feedback.js";
 
 export function createArchiveModule({ getUser, onEdit, onResolve }) {
-  let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn, section = "archive", secBtns, segsEl, warnTimer = null;
+  let listEl, filter = "all", urls = [], tabs, testNote, sendAllBtn, sendBar, searchEl, query = "", section = "archive", secBtns, segsEl, warnTimer = null;
   const openIds = new Set(); // موردهای بازشده در لیست
 
   const revoke = () => { urls.forEach(URL.revokeObjectURL); urls = []; };
@@ -50,15 +50,19 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
     secBtns.archive.classList.toggle("active", section === "archive");
     secBtns.warn.classList.toggle("active", section === "warn");
     segsEl.classList.toggle("hidden", section !== "archive");
-    sendAllBtn.classList.toggle("hidden", section !== "archive");
     listEl.replaceChildren();
+    // جستجوی شماره اشتراک (برای هر دو بخش)؛ شمارنده‌ها همیشه کل موارد را نشان می‌دهند
+    const matchQ = (r) => !query || toLatinDigits(String(r.eshterak || "")).includes(query);
+    const pend = all.filter((r) => r.status === "pending").length;
+    // نوار ثابت پایین: «ارسال همه» فقط وقتی مورد در انتظار هست (و در بخش بایگانی)
+    sendAllBtn.textContent = `ارسال همه موارد در انتظار (${toPersianDigits(pend)})`;
+    sendBar.classList.toggle("hidden", section !== "archive" || pend === 0);
 
     if (section === "warn") {
-      await renderWarnings(active, every, now);
+      await renderWarnings(active.filter(matchQ), every, now, active.length);
       return;
     }
-    const items = all.filter((r) => filter === "all" || r.status === filter);
-    const pend = all.filter((r) => r.status === "pending").length;
+    const items = all.filter((r) => (filter === "all" || r.status === filter) && matchQ(r));
     tabs.forEach((t) => {
       const n = t.dataset.f === "all" ? all.length : t.dataset.f === "pending" ? pend : all.length - pend;
       t.querySelector("b").textContent = toPersianDigits(n);
@@ -66,16 +70,16 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
     });
 
     if (!items.length) {
-      listEl.append(h("p", { class: "empty" }, "موردی وجود ندارد"));
+      listEl.append(h("p", { class: "empty" }, query ? "موردی با این شماره اشتراک پیدا نشد" : "موردی وجود ندارد"));
       return;
     }
     for (const r of items) listEl.append(card(r));
   }
 
   /** «اخطارهای در جریان»: اخطارهای ارسال‌شده که هنوز تعیین تکلیف نشده‌اند؛ حذف‌شدنی نیستند؛ بعد از مهلت قرمز می‌شوند */
-  async function renderWarnings(active, every, now) {
+  async function renderWarnings(active, every, now, totalActive = active.length) {
     if (!active.length) {
-      listEl.append(h("p", { class: "empty" }, "اخطار در جریانی وجود ندارد. اخطارهای «ارسال‌شده» بعد از ارسال به سرور اینجا می‌آیند."));
+      listEl.append(h("p", { class: "empty" }, totalActive ? "اخطاری با این شماره اشتراک پیدا نشد" : "اخطار در جریانی وجود ندارد. اخطارهای «ارسال‌شده» بعد از ارسال به سرور اینجا می‌آیند."));
       return;
     }
     listEl.append(h("p", { class: "info-text" }, "برای تعیین تکلیف، روی اخطار بزنید و عملیات جدید را انتخاب کنید. اخطارها تا تعیین تکلیف قابل حذف نیستند."));
@@ -110,7 +114,11 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
   function card(r) {
     const sent = r.status === "sent";
     const open = openIds.has(r.id);
-    const wrap = h("div", { class: "rec " + (sent ? "sent " : "") + (open ? "open" : "") });
+    const wrap = h("div", { class: "rec " + (sent ? "sent " : "pending ") + (open ? "open" : "") });
+    const nPh = (r.photos || []).length || r.photoCount || 0;
+    const hasGps = r.gpsLat != null;
+    const tm = r.createdAt ? new Date(r.createdAt) : null;
+    const hhmm = tm && !isNaN(tm) ? toPersianDigits(`${String(tm.getHours()).padStart(2, "0")}:${String(tm.getMinutes()).padStart(2, "0")}`) : "";
 
     const toggle = () => {
       open ? openIds.delete(r.id) : openIds.add(r.id);
@@ -121,7 +129,12 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
       h("div", { class: "rec-row", onclick: toggle },
         h("div", { class: "rec-main" },
           h("div", { class: "rec-l1" }, h("b", { dir: "ltr" }, toPersianDigits(r.eshterak)), "  ·  ", r.modeTitle, r.note && h("span", { class: "rec-note-ico", title: "دارای توضیحات", html: ICONS.note })),
-          h("div", { class: "rec-l2" }, `${toPersianDigits(r.date)}  ·  ${formatMoney(r.amount)} ریال${r.omoor ? "  ·  " + r.omoor : ""}`)
+          h("div", { class: "rec-l2" }, `${toPersianDigits(r.date)}  ·  ${formatMoney(r.amount)} ریال${r.omoor ? "  ·  " + r.omoor : ""}`),
+          h("div", { class: "rec-l3" },
+            h("span", {}, `${toPersianDigits(nPh)} عکس`),
+            hasGps && h("span", { class: "rec-gps" }, h("i", { class: "ico-sm", html: ICONS.pin }), "موقعیت"),
+            !sent && pendBadge(r),
+            hhmm && h("span", {}, hhmm))
         ),
         sent
           ? h("span", { class: "rec-ok" }, h("span", { class: "ico-sm", html: ICONS.check }), "ارسال شد")
@@ -160,6 +173,23 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
       );
     }
     return wrap;
+  }
+
+  /** برچسب «در انتظار ارسال»؛ تا موعد ارسال خودکار، شمارش معکوس (زمان ویرایش) نشان می‌دهد */
+  function pendText(r) {
+    const t = Date.parse(r.sendAfter);
+    if (getPref("autoSync") && canSend(getUser()) && t > Date.now()) return `ارسال خودکار تا ${toPersianDigits(Math.max(1, Math.ceil((t - Date.now()) / 60000)))} دقیقه`;
+    return "در انتظار ارسال";
+  }
+  const pendBadge = (r) => h("span", { class: "rec-pend", "data-after": r.sendAfter || "", "data-id": r.id }, pendText(r));
+  /** شمارش معکوس برچسب‌ها را بدون ساخت دوبارهٔ فهرست به‌روز می‌کند */
+  function tickPending() {
+    if (!listEl) return;
+    listEl.querySelectorAll(".rec-pend[data-after]").forEach((el) => {
+      const t = Date.parse(el.dataset.after);
+      if (!(t > 0)) return;
+      el.textContent = pendText({ sendAfter: el.dataset.after });
+    });
   }
 
   /** حساب تست اجازه ارسال به سرور ندارد */
@@ -220,6 +250,9 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
       );
       testNote = h("div", { class: "test-banner hidden" }, TEST_USER_MSG);
       sendAllBtn = h("button", { type: "button", class: "btn btn-success btn-sm", onclick: sendAll }, "ارسال همه موارد در انتظار");
+      sendBar = h("div", { class: "arch-foot hidden" }, sendAllBtn);
+      searchEl = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in arch-search", autocomplete: "off", placeholder: "جستجوی شماره اشتراک…", "aria-label": "جستجوی شماره اشتراک",
+        oninput: (e) => { query = toLatinDigits(e.target.value).replace(/\D/g, ""); render(); } });
       const mkSec = (key, label) => h("button", { type: "button", class: "sec-btn", "data-s": key, onclick: () => { section = key; render(); } }, label, " ", h("b", {}, "۰"));
       secBtns = { archive: mkSec("archive", "بایگانی"), warn: mkSec("warn", "اخطارهای در جریان") };
       segsEl = h("div", { class: "segs" }, tabs);
@@ -227,9 +260,10 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
         h("div", { class: "card" },
           h("div", { class: "sections" }, secBtns.archive, secBtns.warn),
           testNote,
-          sendAllBtn,
+          searchEl,
           segsEl,
-          listEl
+          listEl,
+          sendBar
         )
       );
       bus.on(EV.RECORDS_CHANGED, () => container.classList.contains("active") && render());
@@ -237,7 +271,7 @@ export function createArchiveModule({ getUser, onEdit, onResolve }) {
     onShow() {
       render();
       clearInterval(warnTimer);
-      warnTimer = setInterval(() => { if (section === "warn") render(); }, 60000); // زمان باقی‌مانده و قرمز شدن بعد از مهلت
+      warnTimer = setInterval(() => { if (section === "warn") render(); else tickPending(); }, 30000); // زمان باقی‌مانده و قرمز شدن بعد از مهلت؛ شمارش معکوس ارسال خودکار
     },
     onHide() { revoke(); clearInterval(warnTimer); warnTimer = null; },
     /** باز کردن بخش «اخطارهای در جریان» (از هشدار صوتی/پیام پایان مهلت) */

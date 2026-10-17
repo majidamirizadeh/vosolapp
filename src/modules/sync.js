@@ -32,7 +32,7 @@ async function buildPayload(rec) {
   const photos = await Promise.all(
     (rec.photos || []).map(async (p) => ({ name: p.name, type: p.blob.type || "image/jpeg", data: await blobToBase64(p.blob) }))
   );
-  const { photos: _omit, id, tries, lastError, lastTryAt, ...rest } = rec;
+  const { photos: _omit, id, tries, lastError, lastTryAt, sendAfter, ...rest } = rec;
   // retry=false فقط برای «اولین ارسال» → سرور بررسی‌های تکراری را رد می‌کند و سریع‌تر است
   return { ...rest, retry: (tries || 0) > 0 || !!lastError, photoCount: photos.length, photos };
 }

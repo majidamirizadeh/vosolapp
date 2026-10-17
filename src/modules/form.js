@@ -2,19 +2,19 @@
  * تب «فرم جدید»: فیلدها، GPS، عکس‌ها، ذخیره در گوشی
  */
 import { CONFIG } from "../../config/app.config.js";
-import { FIELDS, MODES, WARNING_DEADLINES, RESOLVE_MAX_PHOTOS } from "../../config/modes.js";
+import { FIELDS, MODES, WARNING_DEADLINES, RESOLVE_MAX_PHOTOS, GPS_MAX_FAILS } from "../../config/modes.js";
 import { isBakhsh } from "../../config/cities.js";
 import { todayJalali, parseJalali } from "../core/jalali.js";
 import { attachDatePicker } from "../core/datepicker.js";
 import { h, toLatinDigits, toPersianDigits, normalizeText, formatMoney } from "../core/utils.js";
-import { alertBox, confirmBox, choiceBox, toast, busy } from "../core/ui.js";
+import { alertBox, confirmBox, confirmTyped, choiceBox, toast, busy } from "../core/ui.js";
 import { kv } from "../core/db.js";
 import { getPref } from "../core/prefs.js";
 import { feedback } from "../core/feedback.js";
 import { downscale, stampPhoto } from "./photos.js";
-import { createRecord, updateRecord, markDeviceSaved, pendingResolutionFor } from "./records.js";
+import { createRecord, updateRecord, markDeviceSaved, pendingResolutionFor, SEND_DELAY_MS } from "./records.js";
 import { saveFiles } from "./storage.js";
-import { sendRecord, serverConfigured } from "./sync.js";
+import { serverConfigured } from "./sync.js";
 import { canSend } from "./auth.js";
 import { acquirePosition, geoErrorMessage } from "./geo.js";
 import { ICONS } from "../core/icons.js";
@@ -56,8 +56,13 @@ export function createFormModule({ getUser, onEditDone }) {
     editing: null,         // وقتی در حال ویرایش رکورد در انتظار هستیم: { id, info }
     resolving: null,       // تعیین تکلیف یک اخطار در جریان: { warn, mode } (mode = عملیات جدید انتخاب‌شده یا null)
     slots: [],             // عنوان باکس‌های عکس (معمولاً photoSlots حالت؛ در ویرایش/تعیین تکلیف ممکن است بیشتر باشد)
+    gpsFails: 0,           // تعداد تلاش ناموفق دریافت GPS در همین فرم (برای عملیات‌های با GPS اجباری)
+    gpsWaived: false,      // بعد از GPS_MAX_FAILS تلاش ناموفق (یا رکورد قدیمیِ بدون GPS) ثبت بدون موقعیت مجاز است
   };
   let root, photoBox, amountLabelEl, gpsInfo, gpsAcc, gpsBtn, modeSel, editBanner, saveBtn, deadlineSel, deadlineField, bannerText;
+  // عناصر چیدمان جدید
+  let tilesEl, tileEls = [], modeCard, modeSum, modeSumText, modeOpen = true, locCard, locSum, locText, locEditor, gpsCard, gpsHostMain, gpsHostDetail, gpsField, gpsBadge, gpsNote, photoBadge,
+    detBtn, detSum, detBody, guideText, stepEl, footEl, chipsEl, locOpen = true, detOpen = false;
 
   const mode = () => MODES[state.mode];
 
@@ -70,6 +75,7 @@ export function createFormModule({ getUser, onEditDone }) {
   function renderPhotos() {
     photoBox.replaceChildren();
     photoBox.style.setProperty("--n", Math.min(state.slots.length, 4)); // تعداد ستون = تعداد عکس‌ها
+    photoBox.classList.toggle("single", state.slots.length === 1);
     state.slots.forEach((label, i) => {
       const p = state.photos[i];
       const box = h("div", {
@@ -86,6 +92,7 @@ export function createFormModule({ getUser, onEditDone }) {
       photoBox.append(box);
     });
     scheduleDraft(true);
+    refreshUi();
   }
 
   // دو ورودی فایل ثابت: دوربین و گالری (ورودی جدا در DOM نگه داشته می‌شود تا روی همه مرورگرهای موبایل کار کند)
@@ -177,13 +184,21 @@ export function createFormModule({ getUser, onEditDone }) {
     return h("div", { class: "field" + (f.wide ? " wide" : "") + (f.key === "leader" ? " is-auto" : "") }, label, input);
   }
 
-  /** «مهلت اخطار» — فقط در «صدور اخطار» دیده می‌شود و اجباری است */
+  /** «مهلت اخطار» — فقط در «صدور اخطار» دیده می‌شود و اجباری است؛ دکمه‌های انتخابی روی یک select (برای ذخیره و پیش‌نویس) */
   function buildDeadlineField() {
-    deadlineSel = h("select", { id: "f-deadline" },
+    deadlineSel = h("select", { id: "f-deadline", class: "sr-only", tabindex: -1, "aria-label": "مهلت اخطار" },
       h("option", { value: "" }, "انتخاب کنید"),
       WARNING_DEADLINES.map((d) => h("option", { value: String(d.value) }, d.label)));
-    deadlineField = h("div", { class: "field deadline-field hidden" },
-      h("label", { for: "f-deadline" }, "مهلت اخطار", h("span", { class: "req" }, " *")), deadlineSel);
+    chipsEl = h("div", { class: "dl-chips", role: "radiogroup", "aria-label": "مهلت اخطار" },
+      WARNING_DEADLINES.map((d) => h("button", { type: "button", class: "dl-chip", "data-v": String(d.value), role: "radio",
+        onclick: () => {
+          if (deadlineSel.disabled) return;
+          deadlineSel.value = deadlineSel.value === String(d.value) ? "" : String(d.value);
+          deadlineSel.dispatchEvent(new Event("change", { bubbles: true }));
+          refreshUi();
+        } }, d.label)));
+    deadlineField = h("div", { class: "deadline-field hidden" },
+      h("span", { class: "dl-lbl" }, "مهلت اخطار", h("span", { class: "req" }, " *")), chipsEl, deadlineSel);
     return deadlineField;
   }
 
@@ -241,8 +256,126 @@ export function createFormModule({ getUser, onEditDone }) {
     if (state.mode === "warning" && !state.resolving && !v.deadline) return "«مهلت اخطار» را انتخاب کنید";
     const n = state.photos.filter(Boolean).length;
     if (n < mode().minPhotos) return `حداقل ${toPersianDigits(mode().minPhotos)} عکس لازم است`;
-    if (CONFIG.rules.requireGps && state.gps.lat == null) return "موقعیت GPS را ثبت کنید";
+    if ((CONFIG.rules.requireGps || mode().requireGps) && state.gps.lat == null && !state.gpsWaived) return "موقعیت GPS را ثبت کنید";
     return null;
+  }
+
+  /* ───────── خط راهنما: موارد لازم و وضعیت هرکدام ───────── */
+  const photoCount = () => state.photos.filter((p) => p && !(state.resolving && p.existing)).length;
+
+  function requirements() {
+    const R = state.resolving;
+    const val = (k) => String(state.inputs[k].value || "").trim();
+    const m = mode();
+    const items = [];
+    if (R) items.push({ key: "mode", label: "عملیات جدید", ok: !!R.mode });
+    items.push({ key: "loc", label: "محل", ok: !!val("omoor") && !!val("city") });
+    items.push({ key: "eshterak", label: "اشتراک", ok: !!toLatinDigits(val("eshterak")).replace(/\D/g, "") });
+    if (!R || R.mode === "collect") {
+      const amt = Number(toLatinDigits(val("amount")).replace(/\D/g, "")) || 0;
+      items.push({ key: "amount", label: R ? "مبلغ وصول" : "مبلغ", ok: R ? amt > 0 : val("amount") !== "" });
+    }
+    if (!R && state.mode === "warning") items.push({ key: "deadline", label: "مهلت", ok: !!deadlineSel.value });
+    if (m.requireGps) items.push({ key: "gps", label: "موقعیت GPS", ok: state.gps.lat != null || state.gpsWaived });
+    items.push({ key: "photos", label: R ? "عکس جدید" : "عکس", ok: photoCount() >= (R ? 1 : m.minPhotos) });
+    if (!parseJalali(state.inputs.date.value)) items.push({ key: "date", label: "تاریخ", ok: false });
+    return items;
+  }
+
+  /** رفتن به اولین مورد ناقص: بخش مربوط باز می‌شود و روی آن می‌رود */
+  function focusItem(key) {
+    const go = (el, focus) => {
+      if (!el) return;
+      el.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      if (focus) setTimeout(() => { try { el.focus({ preventScroll: true }); } catch { /* ادامه */ } }, 250);
+    };
+    if (key === "mode") { modeOpen = true; refreshUi(); return go(modeCard); }
+    if (key === "loc") { setLocOpen(true); return go(state.inputs.omoor.value ? state.inputs.city : state.inputs.omoor, true); }
+    if (key === "eshterak") return go(state.inputs.eshterak, true);
+    if (key === "amount") return go(state.inputs.amount, true);
+    if (key === "deadline") return go(chipsEl);
+    if (key === "gps") return go(gpsBtn);
+    if (key === "photos") return go(photoBox);
+    if (key === "date") { setDetOpen(true); return go(state.inputs.date); }
+  }
+
+  function setLocOpen(on) {
+    locOpen = !!on;
+    refreshUi();
+  }
+  function setDetOpen(on) {
+    detOpen = !!on;
+    refreshUi();
+  }
+
+  /** همهٔ نشان‌های چیدمان (کاشی‌ها، محل، موقعیت، عکس، جزئیات، خط راهنما، کلید ذخیره) را با وضعیت فعلی هماهنگ می‌کند */
+  function refreshUi() {
+    if (!saveBtn || !guideText) return;
+    const R = state.resolving;
+    const m = mode();
+    const cur = R ? R.mode : state.mode;
+    tileEls.forEach(([key, el]) => {
+      el.classList.toggle("sel", key === cur);
+      el.setAttribute("aria-checked", key === cur ? "true" : "false");
+      el.disabled = !!R && key === "warning";
+    });
+    // نوع عملیات: بعد از انتخاب فشرده می‌شود (با «تغییر» دوباره باز می‌شود)
+    const showTiles = modeOpen || !cur;
+    tilesEl.classList.toggle("hidden", !showTiles);
+    modeSum.classList.toggle("hidden", showTiles);
+    modeCard.classList.toggle("open", showTiles);
+    if (cur && MODES[cur]) { modeSum.dataset.mode = cur; modeSumText.textContent = MODES[cur].title; }
+    // محل
+    const omoor = String(state.inputs.omoor.value || ""), city = String(state.inputs.city.value || ""), abadi = String(state.inputs.abadi.value || "").trim();
+    const hasLoc = !!omoor && !!city;
+    locText.textContent = hasLoc ? [omoor, city, abadi].filter(Boolean).join(" · ") : "هنوز انتخاب نشده";
+    const lockedLoc = !!R;
+    const showEditor = locOpen && !lockedLoc;
+    locCard.classList.toggle("open", showEditor);
+    locCard.classList.toggle("empty", !hasLoc);
+    locCard.classList.toggle("locked", lockedLoc);
+    locSum.classList.toggle("hidden", showEditor);
+    locEditor.classList.toggle("hidden", !showEditor);
+    // GPS: در عملیات‌های با GPS اجباری، کادر موقعیت بیرون از «جزئیات» و جداگانه می‌آید
+    const gReq = !!m.requireGps;
+    gpsCard.classList.toggle("hidden", !gReq);
+    const host = gReq ? gpsHostMain : gpsHostDetail;
+    if (gpsField.parentNode !== host) host.append(gpsField);
+    const has = state.gps.lat != null;
+    gpsBadge.textContent = has ? "ثبت شد" : state.gpsWaived ? "ثبت بدون موقعیت مجاز است" : "اجباری";
+    gpsBadge.className = "pill " + (has ? "g" : state.gpsWaived ? "w" : "d");
+    gpsNote.textContent = has ? "" : state.gpsWaived
+      ? "دریافت موقعیت ناموفق بود؛ می‌توانید بدون موقعیت ثبت کنید یا دوباره تلاش کنید."
+      : state.gpsFails > 0 ? `تلاش ${toPersianDigits(state.gpsFails)} از ${toPersianDigits(GPS_MAX_FAILS)} ناموفق بود؛ دوباره امتحان کنید.` : "";
+    gpsNote.classList.toggle("hidden", !gpsNote.textContent);
+    // عکس‌ها
+    const need = R ? 1 : m.minPhotos, n = photoCount(), total = state.slots.filter((_, i) => !(R && state.photos[i]?.existing)).length;
+    photoBadge.textContent = n >= need ? (n < total ? `${toPersianDigits(n)} از ${toPersianDigits(total)} — کافی است` : `${toPersianDigits(n)} از ${toPersianDigits(total)}`) : `حداقل ${toPersianDigits(need)} عکس لازم است`;
+    photoBadge.className = "pill " + (n >= need ? "g" : "d");
+    // مهلت
+    chipsEl.querySelectorAll(".dl-chip").forEach((c) => {
+      const on = c.dataset.v === deadlineSel.value;
+      c.classList.toggle("on", on);
+      c.setAttribute("aria-checked", on ? "true" : "false");
+      c.disabled = deadlineSel.disabled;
+    });
+    // جزئیات بیشتر
+    detBody.classList.toggle("hidden", !detOpen);
+    detBtn.classList.toggle("open", detOpen);
+    const dateTxt = String(state.inputs.date.value || "").trim();
+    detSum.textContent = [dateTxt ? toPersianDigits(dateTxt) : "", !gReq && (has ? "موقعیت ✓" : "موقعیت —"), String(state.inputs.note.value || "").trim() && "توضیحات ✓"].filter(Boolean).join(" · ");
+    // خط راهنما و کلید ذخیره
+    const items = requirements();
+    const miss = items.filter((i) => !i.ok);
+    guideText.textContent = miss.length ? "لازم است: " + miss.map((i) => i.label).join("، ") : "همه‌چیز کامل است ✓";
+    guideText.classList.toggle("bad", miss.length > 0);
+    guideText.classList.toggle("good", miss.length === 0);
+    stepEl.replaceChildren(...items.map((i) => h("i", { class: i.ok ? "d" : "" })));
+    stepEl.classList.toggle("all", miss.length === 0);
+    saveBtn.classList.toggle("is-off", miss.length > 0);
+    saveBtn.classList.toggle("is-go", miss.length === 0);
+    saveBtn.setAttribute("aria-disabled", miss.length ? "true" : "false");
+    footEl.dataset.first = miss[0]?.key || "";
   }
 
   /* ───────── GPS ───────── */
@@ -250,7 +383,10 @@ export function createFormModule({ getUser, onEditDone }) {
 
   async function getGps() {
     if (gpsBusy) return;
-    if (!navigator.geolocation) return alertBox(geoErrorMessage("unsupported"));
+    if (!navigator.geolocation) {
+      if (state.gps.lat == null) { state.gpsFails = GPS_MAX_FAILS; state.gpsWaived = true; refreshUi(); }
+      return alertBox(geoErrorMessage("unsupported"));
+    }
     gpsBusy = true;
     gpsBtn.disabled = true;
     gpsBtn.classList.add("loading");
@@ -261,8 +397,15 @@ export function createFormModule({ getUser, onEditDone }) {
       // دقت‌های بهتر به‌مرور در همین فرم نمایش داده می‌شود
       const fix = await acquirePosition({ onUpdate: (f) => { state.gps = f; showGps(); gpsInfo.classList.add("live"); } });
       state.gps = fix;
+      state.gpsFails = 0;
+      state.gpsWaived = false;
       toast("موقعیت ثبت شد ✓", "success", { ms: 1800 });
     } catch (e) {
+      // در عملیات‌های با GPS اجباری: بعد از GPS_MAX_FAILS تلاش ناموفق (یا وقتی گوشی/آدرس اصلاً GPS ندارد) ثبت بدون موقعیت مجاز می‌شود
+      if (state.gps.lat == null) {
+        state.gpsFails++;
+        if (state.gpsFails >= GPS_MAX_FAILS || e.kind === "unsupported" || e.kind === "insecure") state.gpsWaived = true;
+      }
       await alertBox(e.kind ? geoErrorMessage(e.kind) : "خطا در دریافت موقعیت: " + (e.message || e), "موقعیت مکانی (GPS)");
     } finally {
       gpsBusy = false;
@@ -289,9 +432,18 @@ export function createFormModule({ getUser, onEditDone }) {
       gpsInfo.textContent = "ثبت موقعیت فعلی";
       gpsAcc.textContent = "";
     }
+    refreshUi();
   }
 
   /* ───────── حالت‌ها ───────── */
+  /** لمس کاشی: نوع را انتخاب می‌کند و اگر انتخاب انجام شد کاشی‌ها فشرده می‌شوند */
+  async function pickMode(key) {
+    await setMode(key);
+    const chosen = state.resolving ? state.resolving.mode : state.mode;
+    if (chosen === key) modeOpen = false;
+    refreshUi();
+  }
+
   async function setMode(key, force = false) {
     if (state.resolving) return chooseResolveMode(key); // در تعیین تکلیف، عکس‌ها و فیلدها دست نمی‌خورند
     if (key === state.mode && !force) return;
@@ -301,11 +453,13 @@ export function createFormModule({ getUser, onEditDone }) {
     state.mode = key;
     state.slots = [...mode().photoSlots];
     revokePhotos();
+    state.gpsFails = 0;
+    state.gpsWaived = false;
     deadlineField.classList.toggle("hidden", key !== "warning");
     modeSel.value = key;
-    modeSel.dataset.mode = key; // رنگ کلید انتخاب بر اساس نوع عملیات (CSS)
+    modeSel.dataset.mode = key; // رنگ کاشی/کلید انتخاب بر اساس نوع عملیات (CSS)
     amountLabelEl.firstChild.textContent = mode().amountLabel;
-    renderPhotos();
+    renderPhotos(); // خودش refreshUi را هم صدا می‌زند
   }
 
   /* ───────── پیش‌نویس خودکار (۲۴ ساعت) ─────────
@@ -396,6 +550,8 @@ export function createFormModule({ getUser, onEditDone }) {
         const p = okPhotos ? pr.photos[i] : null;
         return p?.blob ? { blob: p.blob, width: p.width, height: p.height, url: URL.createObjectURL(p.blob) } : null;
       });
+      locOpen = !(state.inputs.omoor.value && state.inputs.city.value);
+      modeOpen = false; // پیش‌نویس یعنی نوع قبلاً انتخاب شده بود
       renderPhotos();
     } finally {
       restoring = false;
@@ -435,20 +591,40 @@ export function createFormModule({ getUser, onEditDone }) {
 
   /* ───────── ذخیره ───────── */
 
-  /** تأیید شماره اشتراک قبل از ثبت نهایی؛ true = تأیید شد */
-  function confirmEshterak(num) {
-    const view = h("div", { style: "text-align:center" },
-      h("p", {}, "شماره اشتراک واردشده:"),
-      h("p", { dir: "ltr", style: "font-size:1.7rem;font-weight:700;letter-spacing:1px;margin:10px 0" }, toPersianDigits(num)),
-      h("p", {}, "آیا تأیید می‌کنید؟"));
-    return confirmBox(view, { yes: "تأیید و ثبت", no: "اصلاح" });
+  /** ارسال خودکار برای این کاربر فعال است؟ (حساب تست و حالت خاموش: نه) */
+  const autoSendOn = (user) => getPref("autoSync") && serverConfigured() && canSend(user);
+  const delayMin = () => Math.round(SEND_DELAY_MS / 60000);
+
+  /** یادآوری قرمز تأخیر ارسال (در کادر تأیید و پیام‌های بعد از ذخیره) */
+  function delayNotice(user) {
+    if (!autoSendOn(user) || !SEND_DELAY_MS) return null;
+    return h("p", { class: "delay-note" }, `ارسال به سرور ${toPersianDigits(delayMin())} دقیقه بعد از ذخیره انجام می‌شود؛ تا آن زمان می‌توانید از تب «بایگانی» ویرایش کنید.`);
   }
 
-  /** ذخیره مقادیر ثابت (امور/شهر/سرگروه) برای فرم بعدی */
+  /** تأیید نهایی با «نوشتن دوباره شمارهٔ اشتراک» (شماره روی کادر نمایش داده نمی‌شود)؛ true = تأیید شد */
+  function confirmEshterak(num, user, title = "تأیید شماره اشتراک") {
+    const view = h("div", { style: "text-align:center" },
+      h("h3", {}, title),
+      h("p", {}, "برای اطمینان، شمارهٔ اشتراک را دوباره بنویسید:"),
+      delayNotice(user));
+    return confirmTyped(view, { expect: num, yes: "تأیید و ثبت", no: "اصلاح", label: "شمارهٔ اشتراک را دوباره بنویسید", mismatch: "با شمارهٔ واردشده در فرم یکی نیست؛ دوباره بنویسید یا «اصلاح» را بزنید" });
+  }
+
+  /** مقادیر ثابت (امور/شهر/آبادی/سرگروه) «به‌ازای هر کاربر»؛ اگر هنوز برای این کاربر ذخیره نشده، مقدار قدیمیِ مشترک گوشی خوانده می‌شود */
+  const stickyKey = () => { const u = getUser(); return u ? `sticky:${u.code}` : "sticky"; };
+  async function loadSticky() {
+    try {
+      const own = await kv.get(stickyKey(), null);
+      if (own && typeof own === "object") return own;
+      return (await kv.get("sticky", {})) || {};
+    } catch { return {}; }
+  }
+
+  /** ذخیره مقادیر ثابت (امور/شهر/آبادی/سرگروه) برای فرم بعدی همین کاربر */
   async function saveSticky(v) {
     const sticky = {};
     FIELDS.filter((f) => f.sticky).forEach((f) => (sticky[f.key] = v[f.key]));
-    await kv.set("sticky", sticky);
+    await kv.set(stickyKey(), sticky);
   }
 
   async function save() {
@@ -457,7 +633,12 @@ export function createFormModule({ getUser, onEditDone }) {
     if (state.resolving) return saveResolution(user);
     const v = readValues();
     const err = validate(v);
-    if (err) return toast(err, "error");
+    if (err) {
+      toast(err, "error");
+      const first = requirements().find((i) => !i.ok);
+      if (first) focusItem(first.key);
+      return;
+    }
 
     // اگر عکس‌های قبلی (مهرخورده) نگه داشته شده‌اند ولی اطلاعات روی مهر عوض شده، هشدار بده
     if (state.editing) {
@@ -473,7 +654,7 @@ export function createFormModule({ getUser, onEditDone }) {
     }
 
     // تأیید شماره اشتراک
-    if (!(await confirmEshterak(v.eshterak))) {
+    if (!(await confirmEshterak(v.eshterak, user))) {
       state.inputs.eshterak.focus();
       return;
     }
@@ -515,16 +696,10 @@ export function createFormModule({ getUser, onEditDone }) {
       if (!wasEdit) await saveSticky(v);
 
       b.done();
-      // ارسال خودکار بلافاصله بعد از ذخیره (در پس‌زمینه) اگر آنلاین باشیم
-      const auto = getPref("autoSync") && navigator.onLine && serverConfigured() && canSend(user);
-      if (auto) {
-        sendRecord(rec.id).then((res) => {
-          if (res.skipped) return;
-          toast(res.ok ? "به سرور ارسال شد ✓" : "ارسال خودکار ناموفق بود؛ از تب «بایگانی» دوباره بفرستید", res.ok ? "success" : "error");
-        });
-      }
+      // ارسال خودکار با تأخیر (SEND_DELAY_MS) توسط autosend.js انجام می‌شود؛ اینجا فوراً چیزی ارسال نمی‌شود
+      const auto = autoSendOn(user);
       const sendNote = auto
-        ? "در حال ارسال خودکار به سرور… (وضعیت در تب «بایگانی»)"
+        ? (SEND_DELAY_MS ? `ارسال خودکار به سرور ${toPersianDigits(delayMin())} دقیقه دیگر انجام می‌شود (تا آن زمان از تب «بایگانی» قابل ویرایش است).` : "ارسال خودکار به سرور انجام می‌شود (وضعیت در تب «بایگانی»).")
         : wasEdit ? "هنوز ارسال نشده است؛ از تب «بایگانی» ارسال کنید." : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید.";
       feedback("success");
       await alertBox(
@@ -554,6 +729,9 @@ export function createFormModule({ getUser, onEditDone }) {
     applyLeader();
     deadlineSel.value = "";
     state.gps = { lat: null, lng: null, accuracy: null };
+    state.gpsFails = 0;
+    state.gpsWaived = false;
+    detOpen = false;
     showGps();
     revokePhotos();
     renderPhotos();
@@ -580,6 +758,7 @@ export function createFormModule({ getUser, onEditDone }) {
     state.resolving = null;
     setFieldsLocked(false);
     setModeOptions(false);
+    refreshUi();
   }
 
   function setFieldsLocked(lock) {
@@ -610,6 +789,7 @@ export function createFormModule({ getUser, onEditDone }) {
       amt.value = r.warn.amount ? Number(r.warn.amount).toLocaleString("en-US") : "";
     }
     refreshResolveBanner();
+    refreshUi();
   }
 
   async function startResolve(warn) {
@@ -659,6 +839,12 @@ export function createFormModule({ getUser, onEditDone }) {
     setFieldsLocked(true);
     editBanner.classList.remove("hidden");
     refreshResolveBanner();
+    locOpen = false;
+    modeOpen = true; // تعیین تکلیف: نوع عملیات جدید باید انتخاب شود
+    detOpen = false;
+    state.gpsFails = 0;
+    state.gpsWaived = false;
+    refreshUi();
     window.scrollTo({ top: 0 });
     document.getElementById("view")?.scrollTo({ top: 0 });
     return true;
@@ -686,15 +872,16 @@ export function createFormModule({ getUser, onEditDone }) {
 
   async function saveResolution(user) {
     const r = state.resolving;
-    if (!r.mode) return toast("ابتدا «عملیات جدید» را انتخاب کنید", "error");
+    if (!r.mode) { toast("ابتدا «عملیات جدید» را انتخاب کنید", "error"); return focusItem("mode"); }
     const v = readValues();
     if (!v.date) return toast("«تاریخ» نامعتبر است (مثال: 1405/07/15)", "error");
-    if (r.mode === "collect" && !(Number(v.amount) > 0)) return toast("«مبلغ وصول» را وارد کنید", "error");
+    if (r.mode === "collect" && !(Number(v.amount) > 0)) { toast("«مبلغ وصول» را وارد کنید", "error"); return focusItem("amount"); }
     const fresh = state.photos.filter((p) => p && !p.existing);
-    if (!fresh.length) return toast("حداقل یک عکس جدید لازم است", "error");
+    if (!fresh.length) { toast("حداقل یک عکس جدید لازم است", "error"); return focusItem("photos"); }
+    if (MODES[r.mode].requireGps && state.gps.lat == null && !state.gpsWaived) { toast("موقعیت GPS را ثبت کنید", "error"); return focusItem("gps"); }
     const dup = await pendingResolutionFor(r.warn.uid);
     if (dup) return alertBox("برای این اخطار قبلاً یک تعیین تکلیف ذخیره شده و هنوز ارسال نشده است.\nاز تب «بایگانی» آن را ارسال کنید.", "تعیین تکلیف تکراری");
-    if (!(await confirmBox(`اخطار اشتراک ${toPersianDigits(r.warn.eshterak)} با «${MODES[r.mode].title}» تعیین تکلیف شود؟`, { yes: "تأیید و ثبت", no: "برگشت" }))) return;
+    if (!(await confirmEshterak(r.warn.eshterak, user, `تعیین تکلیف اخطار با «${MODES[r.mode].title}»`))) return;
 
     const b = busy("در حال درج اطلاعات روی عکس‌ها…");
     saving = true;
@@ -715,16 +902,10 @@ export function createFormModule({ getUser, onEditDone }) {
         saveNote = res.method === "folder" ? " (در پوشه انتخابی)" : res.method === "downloads" ? " (در پوشه دانلود)" : "";
       }
       b.done();
-      const auto = getPref("autoSync") && navigator.onLine && serverConfigured() && canSend(user);
-      if (auto) {
-        sendRecord(rec.id).then((res) => {
-          if (res.skipped) return;
-          toast(res.ok ? "به سرور ارسال شد ✓ — اخطار از «در جریان» خارج شد" : "ارسال خودکار ناموفق بود؛ از تب «بایگانی» دوباره بفرستید", res.ok ? "success" : "error");
-        });
-      }
+      const auto = autoSendOn(user);
       feedback("success");
       await alertBox(
-        `✅ تعیین تکلیف ذخیره شد${saveNote}\n\n${MODES[r.mode].title} — اشتراک ${toPersianDigits(rec.eshterak)}\n\n${auto ? "در حال ارسال خودکار به سرور…" : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید؛ بعد از ارسال، اخطار از «در جریان» خارج می‌شود."}`,
+        `✅ تعیین تکلیف ذخیره شد${saveNote}\n\n${MODES[r.mode].title} — اشتراک ${toPersianDigits(rec.eshterak)}\n\n${auto ? (SEND_DELAY_MS ? `ارسال خودکار به سرور ${toPersianDigits(delayMin())} دقیقه دیگر انجام می‌شود (تا آن زمان از تب «بایگانی» قابل ویرایش است)؛ بعد از ارسال، اخطار از «در جریان» خارج می‌شود.` : "ارسال خودکار به سرور انجام می‌شود.") : "پس از اتصال به اینترنت از تب «بایگانی» ارسال کنید؛ بعد از ارسال، اخطار از «در جریان» خارج می‌شود."}`,
         "تعیین تکلیف اخطار"
       );
       await endResolve();
@@ -743,7 +924,7 @@ export function createFormModule({ getUser, onEditDone }) {
 
   /** پاک‌کردن کامل فرم و بازگرداندن مقادیر ثابت (sticky) ذخیره‌شده */
   async function clearForm() {
-    const sticky = (await kv.get("sticky", {})) || {};
+    const sticky = await loadSticky();
     for (const f of FIELDS) {
       const el = state.inputs[f.key];
       el.value = f.sticky && sticky[f.key] ? sticky[f.key] : "";
@@ -757,6 +938,10 @@ export function createFormModule({ getUser, onEditDone }) {
     deadlineSel.value = "";
     showGps();
     await setMode(state.mode, true);
+    locOpen = !(state.inputs.omoor.value && state.inputs.city.value); // محل از آخرین انتخاب پر شده؟ فشرده؛ وگرنه باز
+    modeOpen = true;
+    detOpen = false;
+    refreshUi();
   }
 
   async function endEdit() {
@@ -798,6 +983,11 @@ export function createFormModule({ getUser, onEditDone }) {
     }
     syncAbadi();
     state.gps = { lat: rec.gpsLat ?? null, lng: rec.gpsLng ?? null, accuracy: rec.gpsAccuracy ?? null };
+    state.gpsFails = 0;
+    state.gpsWaived = rec.gpsLat == null; // رکوردی که قبلاً بدون موقعیت ذخیره شده، برای ویرایش GPS اجباری نمی‌شود
+    locOpen = !(rec.omoor && rec.city);
+    modeOpen = false; // ویرایش: نوع عملیات از قبل مشخص است
+    detOpen = false;
     showGps();
     // عکس‌های فعلی در اسلات‌ها (قابل حذف/تعویض)
     state.photos.forEach((p) => p && URL.revokeObjectURL(p.url));
@@ -828,9 +1018,18 @@ export function createFormModule({ getUser, onEditDone }) {
     resolveHint,
     async mount(container) {
       root = container;
-      // انتخاب نوع عملیات: یک کلید بازشوی تمام‌عرض (به‌جای ۶ دکمه) که با هر گزینه رنگ خودش را می‌گیرد
-      modeSel = h("select", { class: "mode-select", id: "f-mode", "aria-label": "نوع عملیات", onchange: (e) => setMode(e.target.value) },
+      // نوع عملیات: کاشی‌های رنگی (یک لمس)؛ یک select مخفی (پشتیبانی دسترسی‌پذیری/ابزارها) هم‌گام می‌ماند
+      modeSel = h("select", { class: "mode-select sr-only", id: "f-mode", "aria-label": "نوع عملیات", tabindex: -1, onchange: (e) => setMode(e.target.value) },
         Object.entries(MODES).map(([key, m]) => h("option", { value: key }, m.title)));
+      tileEls = Object.entries(MODES).map(([key, m]) =>
+        [key, h("button", { type: "button", class: "mode-tile", "data-mode": key, role: "radio", "aria-checked": "false", onclick: () => pickMode(key) }, m.title)]);
+      tilesEl = h("div", { class: "mode-tiles", role: "radiogroup", "aria-label": "نوع عملیات" }, tileEls.map((t) => t[1]));
+      modeSumText = h("span", { class: "loc-val" });
+      modeSum = h("div", { class: "loc-sum mode-sum hidden" },
+        h("div", { class: "loc-tx" }, h("small", {}, "نوع عملیات"), modeSumText),
+        h("button", { type: "button", class: "loc-edit", onclick: () => { modeOpen = true; refreshUi(); } }, "تغییر"));
+      modeCard = h("div", { class: "sec mode-card" }, modeSum, tilesEl, modeSel);
+
       photoBox = h("div", { class: "photos" });
       gpsInfo = h("span", { class: "gps-val" }, "ثبت موقعیت فعلی");
       gpsAcc = h("span", { class: "gps-acc" });
@@ -843,30 +1042,82 @@ export function createFormModule({ getUser, onEditDone }) {
       editBanner = h("div", { class: "edit-banner hidden" },
         bannerText,
         h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: () => (state.resolving ? cancelResolve() : cancelEdit()) }, "انصراف"));
-      saveBtn = h("button", { type: "button", class: "btn btn-primary btn-lg", onclick: save }, "ذخیره در گوشی");
+      saveBtn = h("button", { type: "button", class: "btn btn-primary btn-lg save-btn is-off", onclick: save }, "ذخیره در گوشی");
+
+      // فیلدها (همه با همان شناسه‌های قبلی f-…) و چیدمان جدید: محل ← مشخصات ← (GPS اجباری) ← عکس ← جزئیات بیشتر
+      const F = {};
+      FIELDS.forEach((f) => { F[f.key] = buildField(f); });
+      const deadlineEl = buildDeadlineField();
+
+      locText = h("span", { class: "loc-val" });
+      locSum = h("div", { class: "loc-sum" },
+        h("div", { class: "loc-tx" }, h("small", {}, "محل (آخرین انتخاب شما)"), locText),
+        h("button", { type: "button", class: "loc-edit", onclick: () => setLocOpen(true) }, "تغییر"));
+      locEditor = h("div", { class: "loc-editor hidden" },
+        h("div", { class: "sec-t" }, "محل"),
+        h("div", { class: "field-grid fg loc-grid" }, F.omoor, F.city, F.abadi),
+        h("button", { type: "button", class: "btn btn-secondary btn-xs loc-ok", onclick: () => {
+          if (!(state.inputs.omoor.value && state.inputs.city.value)) return toast("«امور» و «شهر/بخش» را انتخاب کنید", "error");
+          setLocOpen(false);
+        } }, "تأیید محل"));
+      locCard = h("div", { class: "sec loc-card" }, locSum, locEditor);
+
+      const mainCard = h("div", { class: "sec main-card" },
+        h("div", { class: "sec-t" }, "مشخصات اشتراک"),
+        h("div", { class: "field-grid fg main-grid" }, F.eshterak, F.amount),
+        deadlineEl);
+
+      gpsField = h("div", { class: "field gps-field" }, gpsBtn);
+      gpsHostMain = h("div", { class: "gps-host" });
+      gpsHostDetail = h("div", { class: "gps-host det-gps" });
+      gpsBadge = h("span", { class: "pill d" }, "اجباری");
+      gpsNote = h("div", { class: "gps-note hidden" });
+      gpsCard = h("div", { class: "sec gps-card hidden" }, h("div", { class: "sec-t" }, "موقعیت مکانی (GPS)", gpsBadge), gpsHostMain, gpsNote);
+      gpsHostDetail.append(gpsField);
+
+      photoBadge = h("span", { class: "pill d" });
+      const photosSec = h("div", { class: "sec photos-sec" }, h("div", { class: "sec-t" }, "عکس‌ها", photoBadge), photoBox);
+
+      detSum = h("span", { class: "det-sum" });
+      detBtn = h("button", { type: "button", class: "det-btn", onclick: () => setDetOpen(!detOpen) },
+        h("span", { class: "det-t" }, "جزئیات بیشتر"), detSum, h("span", { class: "chev", html: ICONS.chevron }));
+      detBody = h("div", { class: "det-body field-grid fg hidden" }, F.date, gpsHostDetail, F.note, F.leader);
+      const detSec = h("div", { class: "sec det-sec" }, detBtn, detBody);
+
+      guideText = h("span", { class: "gd-text" });
+      stepEl = h("div", { class: "stepline" });
+      footEl = h("div", { class: "form-foot" },
+        h("div", { class: "guide", role: "button", tabindex: 0, title: "رفتن به مورد ناقص",
+          onclick: () => { const k = footEl.dataset.first; if (k) focusItem(k); },
+          onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); const k = footEl.dataset.first; if (k) focusItem(k); } } }, guideText, stepEl),
+        saveBtn);
 
       root.append(
         h("div", { class: "card" },
           editBanner,
-          h("div", { class: "mode-wrap" }, modeSel),
-          h("div", { class: "field-grid" }, FIELDS.flatMap((f) => (f.key === "amount" ? [buildField(f), buildDeadlineField()] : [buildField(f)])), h("div", { class: "field gps-field" }, gpsBtn)),
-          h("div", { class: "field photos-field" }, h("label", {}, "عکس‌ها"), photoBox),
-          saveBtn
+          h("div", { class: "form-flow" }, modeCard, locCard, mainCard, gpsCard, photosSec, detSec),
+          footEl
         )
       );
 
       // با تغییر امور، فهرست شهر/بخش عوض می‌شود؛ با تغییر شهر/بخش، «آبادی» فعال/غیرفعال می‌شود
       state.inputs[cityDef.dependsOn].addEventListener("change", () => { fillCityOptions(false); syncAbadi(); });
-      state.inputs[cityDef.key].addEventListener("change", syncAbadi);
+      state.inputs[cityDef.key].addEventListener("change", () => {
+        syncAbadi();
+        // شهر (غیر از «بخش») انتخاب شد: محل کامل است و فشرده می‌شود (برای «بخش» باید آبادی هم دیده شود؛ با «تأیید محل» بسته می‌شود)
+        const c = state.inputs[cityDef.key].value;
+        if (c && !isBakhsh(c) && !state.resolving) locOpen = false;
+        refreshUi();
+      });
 
       // ذخیرهٔ خودکار پیش‌نویس با هر تغییر فیلد؛ و فوراً وقتی برنامه پنهان/بسته می‌شود
-      root.addEventListener("input", () => scheduleDraft());
-      root.addEventListener("change", () => scheduleDraft());
+      root.addEventListener("input", () => { scheduleDraft(); refreshUi(); });
+      root.addEventListener("change", () => { scheduleDraft(); refreshUi(); });
       document.addEventListener("visibilitychange", () => { if (document.hidden && draftTimer) flushDraft(); });
       window.addEventListener("pagehide", () => { if (draftTimer) flushDraft(); });
 
       // مقادیر اولیه
-      const sticky = (await kv.get("sticky", {})) || {};
+      const sticky = await loadSticky();
       for (const f of FIELDS) {
         if (f.sticky && sticky[f.key]) state.inputs[f.key].value = sticky[f.key];
         if (f.key === cityDef.dependsOn) fillCityOptions(false);
@@ -875,12 +1126,16 @@ export function createFormModule({ getUser, onEditDone }) {
       applyLeader();
       state.inputs.date.value = todayJalali();
       await setMode(state.mode, true);
+      locOpen = !(state.inputs.omoor.value && state.inputs.city.value);
+      modeOpen = true;
+      refreshUi();
     },
     onShow() {
       if (!draftChecked) { draftChecked = true; checkDraft(); } // بدون انتظار؛ پرسش پیش‌نویس روی فرم باز می‌شود
       if (!state.editing && !state.resolving) applyLeader();
       // تاریخ پیش‌فرض اگر روز عوض شده یا خالی است
       if (!state.inputs.date.value) state.inputs.date.value = todayJalali();
+      refreshUi();
     },
   };
 }

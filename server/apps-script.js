@@ -25,6 +25,11 @@
  *  ✔ ستون‌های قبلی شیت دست‌نخورده‌اند؛ فقط ستون «توضیحات» به انتها (ستون ۲۲) اضافه شده است.
  *  ✔ ستون ۸ حالا «شهر/بخش» است و ستون «آبادی» به انتها (ستون ۲۳) اضافه شده است.
  *
+ * نسخه ۴.۸ — ادمین‌های منطقه: SETTINGS.REGION_ADMINS (کد ۱۰۱ تا ۱۰۴) و SETTINGS.REGIONS (امورهای هر منطقه).
+ *  ادمین منطقه با adminCode + رمز خودش وارد می‌شود و «همهٔ اکشن‌های ادمین» (گزارش، ریز، Excel/PDF، ZIP عکس) فقط روی امورهای منطقهٔ خودش
+ *  کار می‌کند؛ این محدودیت در سرور اعمال می‌شود (نه فقط در برنامه). ادمین اصلی (ADMIN_KEY) همه‌چیز را می‌بیند و می‌تواند «region» را فیلتر کند.
+ *  ⚠ حتماً رمز ادمین‌های منطقه (key) را عوض کنید؛ تا «CHANGE_ME…» بماند ورودشان در سرور رد می‌شود.
+ *
  * نسخه ۴.۷ — myRecords: «بازیابی از سرور» (برای هر اکیپ؛ فقط توکن برنامه + کد کاربر) رکوردهای ۶۰ روز اخیر همان کاربر را (بدون عکس/لینک) برمی‌گرداند
  *  تا بعد از پاک شدن اطلاعات برنامه، بایگانی و «اخطارهای در جریان» دوباره ساخته شود.
  *
@@ -51,7 +56,23 @@ const SETTINGS = {
   MAX_PHOTOS: 8,
   // رمز ادمین: باید دقیقاً با "pass" کاربر ادمین در config/users.json یکی باشد.
   // (چون APP_TOKEN داخل برنامه‌ی همه اکیپ‌ها هست، اکشن‌های گزارش بدون این رمز کار نمی‌کنند.)
-  ADMIN_KEY: "admin1405",
+  ADMIN_KEY: "admin1405",   // رمز «ادمین اصلی» (کد ورود 00) — همهٔ امورها
+  // ادمین‌های منطقه (نسخهٔ ۴.۸): هر کدام فقط امورهای منطقهٔ خودش را می‌بیند (گزارش، ریز، Excel، PDF، ZIP عکس).
+  // code و key باید با کد و رمز همان کاربر در config/users.json یکی باشد (رمز متن ساده است؛ هش نمی‌شود).
+  // تا مقدار key از «CHANGE_ME…» عوض نشود ورود آن ادمین در سرور رد می‌شود.
+  REGION_ADMINS: [
+    { code: "101", name: "ادمین غرب", region: "غرب", key: "1405" },
+    { code: "102", name: "ادمین شرق", region: "شرق", key: "1405" },
+    { code: "103", name: "ادمین شمال", region: "شمال", key: "1405" },
+    { code: "104", name: "ادمین جنوب", region: "جنوب", key: "1405" },
+  ],
+  // امورهای هر منطقه (برگرفته از Book2.xlsx؛ باید با config/regions.js یکی بماند)
+  REGIONS: {
+    "غرب": ["امور فراشبند", "امور سروستان", "امور بیضا", "امور کازرون", "امور فیروزآباد", "امور سپیدان", "امور کوه چنار", "امور رستم", "امور ممسنی", "امور کوار"],
+    "شرق": ["امور خرامه", "امور فسا", "امور ارسنجان", "امور زرین دشت", "امور بختگان", "امور استهبان", "امور نی‌ریز", "امور داراب"],
+    "شمال": ["امور آباده", "امور زرقان", "امور خرمبید", "امور اقلید", "امور پاسارگاد", "امور بوانات", "امور مرودشت", "امور سرچهان"],
+    "جنوب": ["امور لارستان", "امور جهرم", "امور جویم", "امور اوز", "امور لامرد", "امور خنج", "امور مهر", "امور گراش", "امور خفر", "امور قیر و کارزین"],
+  },
   WARNING_TITLE: "صدور اخطار",   // باید دقیقاً با MODES.warning.title در config/modes.js یکی باشد (اخطارها در گزارش از عملکرد جدا می‌شوند)
   COLLECT_TITLE: "وصول مطالبات", // باید دقیقاً با MODES.collect.title در config/modes.js یکی باشد (اولویت مبلغ در اشتراک تکراری)
   MAX_LIST: 800,            // سقف پیش‌فرض تعداد ردیف در listRecords
@@ -89,7 +110,7 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, app: "collection-app-server", version: 47, time: new Date().toISOString() });
+  return json_({ ok: true, app: "collection-app-server", version: 48, time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -98,7 +119,10 @@ function doPost(e) {
     if (data.token !== SETTINGS.APP_TOKEN) return json_({ ok: false, error: "توکن نامعتبر است" });
     // اکشن‌های ادمین (فقط خواندن؛ بدون قفل)
     if (ADMIN_ACTIONS_[data.action]) {
-      checkAdmin_(data);
+      const adm = checkAdmin_(data);
+      // محدودهٔ دسترسی همیشه از سمت سرور تعیین می‌شود (هر چه گوشی بفرستد نادیده گرفته می‌شود)
+      data._scope = adm.scope;
+      data._scopeKey = adm.scopeKey;
       return json_(ADMIN_ACTIONS_[data.action](data));
     }
     // ارسال یک رکورد (سازگار با نسخه‌های قدیمی برنامه)
@@ -430,10 +454,48 @@ const ADMIN_ACTIONS_ = {
   groupReport: groupReport_,
 };
 
+/** نام امور → کلید مقایسه (فاصله/نیم‌فاصله/ی و ک عربی یکسان) */
+function omoorKey_(v) { return normText_(String(v || "").replace(/\u200c/g, " ")); }
+
+/** مجموعهٔ امورهای یک منطقه ({کلید: true}) */
+function regionScope_(region) {
+  const list = SETTINGS.REGIONS[region];
+  if (!list) throw new Error("منطقهٔ «" + region + "» تعریف نشده است");
+  const set = {};
+  list.forEach(function (o) { set[omoorKey_(o)] = true; });
+  return set;
+}
+
+/**
+ * احراز هویت ادمین → { code, name, region, scope, scopeKey }
+ *  • ادمین منطقه: data.adminCode با یکی از REGION_ADMINS و رمز آن یکی باشد → scope = امورهای همان منطقه
+ *  • ادمین اصلی: رمز = ADMIN_KEY (adminCode خالی یا هر کد غیرِ ادمین منطقه) → scope = null (همه)
+ *  data.region (انتخابی از گوشی): برای ادمین اصلی فقط محدودکننده است؛ برای ادمین منطقه باید همان منطقهٔ خودش باشد.
+ */
 function checkAdmin_(data) {
-  const key = SETTINGS.ADMIN_KEY;
-  if (!key || key === "CHANGE_ME_ADMIN_KEY") throw new Error("ADMIN_KEY در اسکریپت سرور تنظیم نشده است");
-  if (String(data.adminKey || "") !== String(key)) throw new Error("رمز ادمین نامعتبر است");
+  const code = latin_(String(data.adminCode || "")).trim();
+  const given = String(data.adminKey || "");
+  const ra = code ? SETTINGS.REGION_ADMINS.filter(function (a) { return String(a.code) === code; })[0] : null;
+  let adm;
+  if (ra) {
+    if (!ra.key || /^CHANGE_ME/.test(String(ra.key))) throw new Error("رمز ادمین «" + ra.name + "» در اسکریپت سرور تنظیم نشده است (REGION_ADMINS)");
+    if (given !== String(ra.key)) throw new Error("رمز ادمین نامعتبر است");
+    adm = { code: ra.code, name: ra.name, region: ra.region, scope: regionScope_(ra.region), scopeKey: "R:" + ra.region };
+  } else {
+    const key = SETTINGS.ADMIN_KEY;
+    if (!key || key === "CHANGE_ME_ADMIN_KEY") throw new Error("ADMIN_KEY در اسکریپت سرور تنظیم نشده است");
+    if (given !== String(key)) throw new Error("رمز ادمین نامعتبر است");
+    adm = { code: code || "00", name: "ادمین اصلی", region: "", scope: null, scopeKey: "*" };
+  }
+  // فیلتر منطقه (برای ادمین اصلی)
+  const wantRegion = String(data.region || "").trim();
+  if (wantRegion) {
+    if (adm.region && wantRegion !== adm.region) throw new Error("دسترسی به منطقهٔ «" + wantRegion + "» ندارید");
+    if (!adm.region) { adm.scope = regionScope_(wantRegion); adm.scopeKey = "R:" + wantRegion; }
+  }
+  // امور خواسته‌شده باید داخل محدوده باشد
+  if (adm.scope && data.omoor && !adm.scope[omoorKey_(data.omoor)]) throw new Error("دسترسی به «" + data.omoor + "» ندارید");
+  return adm;
 }
 
 /** ارقام فارسی/عربی → لاتین */
@@ -598,6 +660,7 @@ function filterRows_(data, mode, tm, sheet0) {
   const wantMode = data.modeTitle ? normText_(data.modeTitle) : "";
   const wantOmoor = data.omoor ? normText_(data.omoor) : "";
   const wantEsh = data.eshterak ? latin_(data.eshterak).replace(/\D/g, "") : "";
+  const scope = data._scope || null; // محدودهٔ ادمین منطقه (فقط سرور تعیین می‌کند)
 
   const out = [];
   for (let i = rows.length - 1; i >= 0; i--) {
@@ -610,6 +673,7 @@ function filterRows_(data, mode, tm, sheet0) {
     if (wantCode && codeKey_(r[2]) !== wantCode) continue;
     if (wantMode && normText_(r[4]) !== wantMode) continue;
     if (wantOmoor && normText_(r[6]) !== wantOmoor) continue;
+    if (scope && !scope[omoorKey_(r[6])]) continue;
     if (wantEsh && latin_(r[9]).replace(/\D/g, "") !== wantEsh) continue;
     out.push(r);
   }
@@ -707,7 +771,7 @@ function groupReport_(data) {
   const t0 = Date.now();
   const cache = CacheService.getScriptCache();
   // نتیجهٔ همین فیلتر تا ۵ دقیقه (تا وقتی تعداد ردیف‌های شیت عوض نشده) در Cache می‌ماند؛ fresh:true آن را نادیده می‌گیرد
-  const keyRaw = [data.fromDate, data.toDate, data.userCode, data.modeTitle, data.omoor, data.eshterak].join("|");
+  const keyRaw = [data.fromDate, data.toDate, data.userCode, data.modeTitle, data.omoor, data.eshterak, data._scopeKey || "*"].join("|");
   const key = "gr:" + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, keyRaw, Utilities.Charset.UTF_8));
   const tm = {};
   const sheet0 = getSheet_();
@@ -814,14 +878,16 @@ function fileIdFromUrl_(url) {
   return m ? m[0] : "";
 }
 
-/** مجموعهٔ شناسه فایل‌های ثبت‌شده در شیت (فقط همین‌ها قابل خواندن‌اند) */
-function allowedIds_() {
+/** مجموعهٔ شناسه فایل‌های ثبت‌شده در شیت (فقط همین‌ها قابل خواندن‌اند)؛ scope: فقط ردیف‌های امورهای مجاز */
+function allowedIds_(scope) {
   const allowed = {};
   const sheet = getSheet_();
   const last = sheet.getLastRow();
   if (last > 1) {
-    sheet.getRange(2, 18, last - 1, 4).getValues().forEach(function (row) {
-      row.forEach(function (u) { const id = fileIdFromUrl_(u); if (id) allowed[id] = true; });
+    // ستون ۷ (امور) تا ۲۱ (لینک عکس ۴)
+    sheet.getRange(2, 7, last - 1, 15).getValues().forEach(function (row) {
+      if (scope && !scope[omoorKey_(row[0])]) return;
+      for (let i = 11; i < 15; i++) { const id = fileIdFromUrl_(row[i]); if (id) allowed[id] = true; }
     });
   }
   return allowed;
@@ -840,7 +906,7 @@ function sigOf_(id) {
 function signPhotos_(data) {
   const t0 = Date.now();
   const ids = (data.fileIds || []).slice(0, 3000).map(String);
-  const allowed = allowedIds_();
+  const allowed = allowedIds_(data._scope || null);
   const sigs = {}, missing = [];
   ids.forEach(function (id) { if (allowed[id]) sigs[id] = sigOf_(id); else missing.push(id); });
   return { ok: true, sigs: sigs, missing: missing, perCall: SETTINGS.PHOTOS_PER_CALL, ms: Date.now() - t0 };
@@ -899,7 +965,7 @@ function getPhotos_(data) {
   } else {
     const req = (data.fileIds || []).slice(0, max).map(String);
     if (!req.length) return { ok: true, photos: [], missing: [], ms: 0 };
-    const allowed = allowedIds_();
+    const allowed = allowedIds_(data._scope || null);
     req.forEach(function (id) { if (allowed[id]) ids.push(id); else bad.push(id); });
   }
   const r = ids.length ? readPhotos_(ids) : { photos: [], missing: [], fast: 0 };

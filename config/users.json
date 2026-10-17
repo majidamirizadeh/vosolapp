@@ -261,6 +261,34 @@
       "name": "تست",
       "pass": "1234",
       "role": "test"
+    },
+    {
+      "code": "101",
+      "name": "ادمین غرب",
+      "pass": "1405",
+      "role": "admin",
+      "region": "غرب"
+    },
+    {
+      "code": "102",
+      "name": "ادمین شرق",
+      "pass": "1405",
+      "role": "admin",
+      "region": "شرق"
+    },
+    {
+      "code": "103",
+      "name": "ادمین شمال",
+      "pass": "1405",
+      "role": "admin",
+      "region": "شمال"
+    },
+    {
+      "code": "104",
+      "name": "ادمین جنوب",
+      "pass": "1405",
+      "role": "admin",
+      "region": "جنوب"
     }
   ]
 }

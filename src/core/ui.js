@@ -1,5 +1,5 @@
 /** مؤلفه‌های مشترک رابط کاربری: پیام، تأیید، وضعیت در حال کار */
-import { h } from "./utils.js";
+import { h, toLatinDigits } from "./utils.js";
 import { feedback } from "./feedback.js";
 
 function host() {
@@ -56,6 +56,39 @@ export const confirmBox = async (message, { yes = "بله", no = "انصراف",
     { label: no, cls: "btn-secondary", value: false },
     { label: yes, cls: danger ? "btn-danger" : "btn-primary", value: true },
   ])) === true;
+
+/**
+ * تأیید با «نوشتن دوباره»: کاربر باید مقدار مورد انتظار (مثلاً شماره اشتراک) را دوباره تایپ کند.
+ * @param {Node|string} message  متن/عنصر بالای کادر
+ * @param {{expect:string, yes?:string, no?:string, label?:string, mismatch?:string}} opts
+ * @returns {Promise<boolean>} true فقط وقتی مقدار تایپ‌شده با expect یکی باشد
+ */
+export function confirmTyped(message, { expect, yes = "تأیید و ثبت", no = "اصلاح", label = "دوباره بنویسید", mismatch = "با مقدار واردشده در فرم یکی نیست" } = {}) {
+  const norm = (v) => toLatinDigits(String(v ?? "")).replace(/\D/g, "");
+  const want = norm(expect);
+  return new Promise((resolve) => {
+    const close = (val) => { overlay.remove(); resolve(val); };
+    const input = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in confirm-input", autocomplete: "off", "aria-label": label, placeholder: label });
+    const err = h("p", { class: "confirm-err hidden" }, mismatch);
+    const okBtn = h("button", { type: "button", class: "btn btn-primary", disabled: true, onclick: () => submit() }, yes);
+    const submit = () => { if (norm(input.value) === want && want) close(true); };
+    input.addEventListener("input", () => {
+      const typed = norm(input.value);
+      const good = typed === want && !!want;
+      okBtn.disabled = !good;
+      // وقتی هم‌طول شد ولی یکی نبود پیام بده
+      err.classList.toggle("hidden", good || typed.length < want.length);
+    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+    const overlay = h("div", { class: "modal-overlay" },
+      h("div", { class: "modal", role: "dialog", "aria-modal": "true" },
+        h("div", { class: "modal-body" }, msgNode(message), h("label", { class: "confirm-lbl" }, label), input, err),
+        h("div", { class: "modal-actions" },
+          h("button", { type: "button", class: "btn btn-secondary", onclick: () => close(false) }, no), okBtn)));
+    host().append(overlay);
+    setTimeout(() => input.focus(), 50);
+  });
+}
 
 /** پوشش «در حال انجام…» با امکان به‌روزرسانی متن */
 export function busy(text = "لطفاً صبر کنید…") {

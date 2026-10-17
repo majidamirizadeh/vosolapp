@@ -9,7 +9,7 @@
  *  - درخواست‌های خارج از دامنه (سرور گوگل) دست‌نخورده می‌مانند
  */
 /*BUILD:START*/
-const VERSION = "0154eb4384";
+const VERSION = "bc31463920";
 const FILES = [
   "./",
   ".gitattributes",
@@ -24,6 +24,7 @@ const FILES = [
   "config/cities.js",
   "config/modes.js",
   "config/omoors.js",
+  "config/regions.js",
   "config/users.json",
   "index.html",
   "manifest.json",
@@ -44,6 +45,7 @@ const FILES = [
   "src/modules/admin.js",
   "src/modules/archive.js",
   "src/modules/auth.js",
+  "src/modules/autosend.js",
   "src/modules/downloads.js",
   "src/modules/exporter.js",
   "src/modules/form.js",

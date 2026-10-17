@@ -8,6 +8,16 @@ import { bus, EV } from "../core/bus.js";
 import { safeFileName, toLatinDigits, uuid } from "../core/utils.js";
 import { allocateNames } from "./naming.js";
 
+/**
+ * تأخیر ارسال خودکار بعد از «ذخیره در گوشی» (پیش‌فرض ۱۰ دقیقه) تا فرصت ویرایش باشد.
+ * برای تغییر: در config/app.config.js داخل rules بنویسید  sendDelayMinutes: 10  (۰ = فوری)
+ */
+export const SEND_DELAY_MS = Math.max(0, Number(CONFIG.rules?.sendDelayMinutes ?? 10)) * 60000;
+/** زمان ارسال خودکارِ این لحظه به بعد (ISO) */
+export const sendAfterNow = () => new Date(Date.now() + SEND_DELAY_MS).toISOString();
+/** آیا موعد ارسال خودکار رکورد رسیده است؟ (رکوردِ بدون sendAfter = قدیمی → بله) */
+export const isSendDue = (r, now = Date.now()) => !(Date.parse(r?.sendAfter) > now);
+
 /** شماره اشتراک → رشته امن برای نام فایل */
 export function subscriptionKey(raw) {
   return safeFileName(toLatinDigits(raw)).replace(/-/g, "");
@@ -182,6 +192,7 @@ export async function createRecord(data, photos) {
       status: "pending",
       deviceSaved: false,
       createdAt: new Date().toISOString(),
+      sendAfter: sendAfterNow(),
       sentAt: null,
     })
   );
@@ -233,6 +244,7 @@ export async function updateRecord(id, data, photos) {
         photos: photos.map((p, i) => ({ name: needName[i] ? names[k++] : p.name, blob: p.blob, width: p.width, height: p.height })),
         lastError: null,
         editedAt: new Date().toISOString(),
+        sendAfter: sendAfterNow(), // با ویرایش، ۱۰ دقیقهٔ ارسال خودکار از نو شروع می‌شود
       };
     }
   );

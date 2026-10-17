@@ -13,6 +13,7 @@ import { loadUsers, currentUser, logout, canSend, isAdmin, isTestUser } from "./
 import { showLogin } from "./modules/login.js";
 import { migrateLegacy, listFor, pendingResolutionFor } from "./modules/records.js";
 import { mountUnsentBar, watchWarnings } from "./modules/unsentbar.js";
+import { startAutoSender } from "./modules/autosend.js";
 import { feedback, unlockAudio } from "./core/feedback.js";
 import { runRestore } from "./modules/settings.js";
 import { loadHandle, requestPersistence, status as folderStatus, folderApiSupported } from "./modules/storage.js";
@@ -156,14 +157,7 @@ function setupNetwork() {
   window.addEventListener("online", async () => {
     update();
     feedback("online");
-    if (user && getPref("autoSync") && serverConfigured() && canSend(user)) { // حساب تست هرگز ارسال خودکار ندارد
-      const list = await listFor(user, { allUsers: getPref("allUsersOnPhone") });
-      const ids = list.filter((r) => r.status === "pending").map((r) => r.id);
-      if (ids.length) {
-        const out = await sendMany(ids);
-        toast(`ارسال خودکار: ${out.ok} موفق${out.failed ? "، " + out.failed + " ناموفق" : ""}`, out.failed ? "error" : "success");
-      }
-    }
+    // ارسال خودکار (با تأخیر ۱۰ دقیقه‌ای بعد از ذخیره) را autosend.js بعد از آنلاین شدن انجام می‌دهد
   });
   window.addEventListener("offline", () => { update(); feedback("alert"); });
   update();
@@ -312,6 +306,7 @@ async function start() {
   setupMenu({ router, userLabel, doLogout });
   setupBackGuard(router);
   mountUnsentBar({ anchor: document.getElementById("view"), getUser, goArchive: () => router.show("archive") });
+  startAutoSender({ getUser });
   watchWarnings({ getUser, goWarnings: () => { archiveMod.openWarnings(); router.show("archive"); } });
   await router.show("form");
   router.refreshBadges();

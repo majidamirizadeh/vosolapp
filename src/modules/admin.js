@@ -5,6 +5,7 @@
  */
 import { MODES } from "../../config/modes.js";
 import { OMOORS } from "../../config/omoors.js";
+import { REGIONS, REGION_NAMES } from "../../config/regions.js";
 import { h, downloadBlob, toPersianDigits, toLatinDigits, formatMoney } from "../core/utils.js";
 import { parseJalali, todayJalali, rangePreset, PRESETS, jalaliSpanDays } from "../core/jalali.js";
 import { toast, busy, alertBox, confirmBox, rangeSelect } from "../core/ui.js";
@@ -14,7 +15,7 @@ import { createZip } from "../lib/zip.js";
 import { createPdfFromJpegs } from "../lib/pdf.js";
 import { ensureFonts } from "./photos.js";
 import { serverCall } from "./sync.js";
-import { sessionPass } from "./auth.js";
+import { sessionPass, adminRegion } from "./auth.js";
 import { summarize, dedupAmount } from "./records.js";
 import { ICONS } from "../core/icons.js";
 import { getCached, cachedIds, putCached, clearCache, cacheCount } from "./photocache.js";
@@ -172,8 +173,10 @@ export function createAdminModule({ getUser }) {
 
   /** فیلترها → پارامترهای سرور؛ null = خطا */
   function readFilters() {
-    const p = { adminKey: f.key.value.trim() };
-    if (!p.adminKey) { toast("رمز ادمین را وارد کنید", "error"); return null; }
+    const p = { adminKey: f.key.value.trim(), adminCode: String(getUser()?.code || "") };
+    if (!p.adminKey) { toast("رمز ادمین را وارد کنید", "error"); f.keyField?.classList.remove("hidden"); return null; }
+    const region = myRegion() || f.region.value; // ادمین منطقه همیشه منطقهٔ خودش؛ ادمین اصلی: انتخاب فیلتر
+    if (region) p.region = region;
     if (!f.all.checked) {
       const a = parseJalali(f.from.value), b = parseJalali(f.to.value);
       if (!a || !b) { toast("تاریخ‌ها را به شکل 1405/07/15 وارد کنید (یا «همه بازه» را بزنید)", "error"); return null; }
@@ -194,6 +197,8 @@ export function createAdminModule({ getUser }) {
     const raw = String(res?.error || "خطای نامشخص");
     let why = "سرور پاسخ درستی نداد.", tip = "کمی بعد دوباره تلاش کنید.";
     if (/آفلاین/.test(raw)) { why = "اینترنت دستگاه قطع است."; tip = "اتصال اینترنت (Wi-Fi یا داده) را بررسی و دوباره تلاش کنید."; }
+    else if (/REGION_ADMINS/.test(raw)) { why = "رمز ادمین منطقه در اسکریپت سرور تنظیم نشده است."; tip = "در server/apps-script.js بخش SETTINGS.REGION_ADMINS مقدار key را (همان رمز users.json) بگذارید و اسکریپت را دوباره Deploy کنید."; }
+    else if (/دسترسی به/.test(raw)) { why = "این امور/منطقه در محدودهٔ دسترسی حساب شما نیست."; tip = "فقط امورهای منطقهٔ خودتان را انتخاب کنید."; }
     else if (/رمز ادمین/.test(raw)) { why = "رمز ادمین واردشده با رمز سرور یکی نیست."; tip = "رمز را همان رمز ورود ادمین وارد کنید (ADMIN_KEY در اسکریپت سرور هم باید همان باشد)."; }
     else if (/ADMIN_KEY/.test(raw)) { why = "رمز ادمین در اسکریپت سرور تنظیم نشده است."; tip = "ADMIN_KEY را در server/apps-script.js بگذارید و اسکریپت را دوباره Deploy کنید."; }
     else if (/توکن/.test(raw)) { why = "توکن برنامه با توکن سرور یکی نیست."; tip = "مقدار token در config/app.config.js و APP_TOKEN در اسکریپت سرور باید یکسان باشد."; }
@@ -242,6 +247,19 @@ export function createAdminModule({ getUser }) {
       },
       done() { clearInterval(timer); b.done(); },
     };
+  }
+  /** منطقهٔ ادمین فعلی ("" = ادمین اصلی) */
+  const myRegion = () => adminRegion(getUser());
+  /** امورهای قابل انتخاب: منطقهٔ ادمین / منطقهٔ انتخاب‌شده / همه */
+  const omoorChoices = () => {
+    const r = myRegion() || (f.region && f.region.value);
+    return r && REGIONS[r] ? REGIONS[r] : OMOORS;
+  };
+  function fillOmoors() {
+    const keep = f.omoor.value;
+    const list = omoorChoices();
+    f.omoor.replaceChildren(h("option", { value: "" }, myRegion() ? `همهٔ امورهای منطقه ${myRegion()}` : "همه امورها"), ...list.map((o) => h("option", { value: o }, o)));
+    if (list.includes(keep)) f.omoor.value = keep;
   }
   const currentSort = () => "omoor"; // ردیف‌های Excel همیشه بر اساس امور (و بعد تاریخ، اکیپ) مرتب می‌شوند
 
@@ -294,12 +312,13 @@ export function createAdminModule({ getUser }) {
     const list = data.groups[key] || [];
     const all = data.all;
     result.append(h("div", { class: "report-body" },
-      h("div", { class: "stat-grid" },
+      h("div", { class: "stat-grid kpi-grid" },
         stat("تعداد کل", data.count),
         statMoney("جمع وصول (ریال)", all.collectTotal),
-        statMoney("جمع مبالغ پیگیری‌شده (ریال)", all.followedTotal),
-        stat(`تعداد ${groupLabel(key)}`, list.length)
+        h("div", { class: "stat kpi-warn" }, h("b", {}, toPersianDigits(warnVal(all, "open").count)), h("span", {}, "اخطار در جریان")),
+        h("div", { class: "stat kpi-exp" }, h("b", {}, toPersianDigits(warnVal(all, "expired").count)), h("span", {}, "پایان مهلت"))
       ),
+      h("p", { class: "info-text" }, `جمع مبالغ پیگیری‌شده: ${formatMoney(all.followedTotal)} ریال — ${toPersianDigits(list.length)} ${groupLabel(key)}`),
       gr.note && h("p", { class: "info-text" }, gr.note),
       h("h3", { class: "card-title section-title" }, "خلاصهٔ عملیات‌ها (کل)"),
       opsTable(all, true),
@@ -393,7 +412,7 @@ export function createAdminModule({ getUser }) {
     const sortLabel = SORT_KEYS.find((s) => s.value === currentSort())?.label || "امور";
     return createXlsx([{
       name: "گزارش سرور",
-      title: `گزارش سرور — ${rng}${filters.omoor ? " — " + filters.omoor : ""} — مرتب‌سازی: ${sortLabel}`,
+      title: `گزارش سرور — ${rng}${filters.region ? " — منطقه " + filters.region : ""}${filters.omoor ? " — " + filters.omoor : ""} — مرتب‌سازی: ${sortLabel}`,
       columns: [
         { header: "ردیف", width: 7, type: "number" }, { header: "تاریخ", width: 13 }, { header: "کد اکیپ", width: 9 },
         { header: "نام اکیپ", width: 16 }, { header: "نوع عملیات", width: 20 }, { header: "امور", width: 18 },
@@ -476,7 +495,7 @@ export function createAdminModule({ getUser }) {
         ctx.font = `400 26px ${FONT}`;
         ctx.fillStyle = "#333";
         ctx.fillText(toPersianDigits(`بازه: ${rng}`), PW - M, 120);
-        ctx.fillText(`گروه‌بندی: ${gLabel}${filters.omoor ? "  |  امور: " + filters.omoor : ""}`, PW - M, 158);
+        ctx.fillText(`گروه‌بندی: ${gLabel}${filters.region ? "  |  منطقه: " + filters.region : ""}${filters.omoor ? "  |  امور: " + filters.omoor : ""}`, PW - M, 158);
         ctx.fillText(toPersianDigits(`تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 196);
 
         const by = 230, bh = 215;
@@ -725,6 +744,7 @@ export function createAdminModule({ getUser }) {
       }
     }
     const lines = [
+      ...(p.region ? [`منطقه: ${p.region}`] : []),
       `امور: ${p.omoor || "همه (بدون فیلتر)"}`,
       `تاریخ: ${hasDate ? toPersianDigits(`${p.fromDate} تا ${p.toDate}`) : "بدون فیلتر"}`,
       `اکیپ: ${hasUser ? toPersianDigits(p.userCode) : "همه (بدون فیلتر)"}`,
@@ -997,7 +1017,7 @@ export function createAdminModule({ getUser }) {
     await clearCache();
     toast("حافظهٔ عکس‌ها پاک شد", "success");
   }
-  const pick = (f) => ({ adminKey: f.adminKey });
+  const pick = (f) => ({ adminKey: f.adminKey, adminCode: f.adminCode, ...(f.region ? { region: f.region } : {}) });
 
   const field = (label, el) => h("div", { class: "field" }, h("label", {}, label), el);
 
@@ -1065,24 +1085,25 @@ export function createAdminModule({ getUser }) {
     const cols = ["#", "تاریخ", "اکیپ", "امور", "شهر/بخش", "اشتراک", "عملیات", "مبلغ (ریال)", "وضعیت", "عکس‌ها"];
     const nLinks = recs.reduce((t, r) => t + (r.photoLinks || []).filter(safeUrl).length, 0);
     detailResult.append(
-      h("p", { class: "info-text" }, `${toPersianDigits(recs.length)} رکورد — بازه ${toPersianDigits(filters.fromDate)} تا ${toPersianDigits(filters.toDate)} — ${toPersianDigits(nLinks)} لینک عکس (با لمس در مرورگر باز می‌شود؛ برای دیدن عکس‌ها باید با حساب گوگلِ دارای دسترسی به Drive وارد باشید).`),
+      h("p", { class: "info-text" }, `✓ ${toPersianDigits(recs.length)} رکورد — در حد مجاز (حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز · ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد) — بازه ${toPersianDigits(filters.fromDate)} تا ${toPersianDigits(filters.toDate)} — ${toPersianDigits(nLinks)} لینک عکس (با لمس در مرورگر باز می‌شود؛ برای دیدن عکس‌ها باید با حساب گوگلِ دارای دسترسی به Drive وارد باشید).`),
       h("div", { class: "table-scroll" },
         h("table", { class: "mini-table detail-table" },
           h("thead", {}, h("tr", {}, cols.map((c) => h("th", {}, c)))),
           h("tbody", {}, recs.map((r, i) => {
             const st = detailStatus(r);
             const cls = /پایان مهلت/.test(st) ? "d-exp" : /در جریان/.test(st) ? "d-open" : "";
+            const td = (label, attrs, ...kids) => h("td", { "data-label": label, ...attrs }, ...kids);
             return h("tr", { class: cls },
-              h("td", {}, toPersianDigits(i + 1)),
-              h("td", {}, toPersianDigits(r.date)),
-              h("td", {}, r.userName || r.userCode),
-              h("td", {}, r.omoor),
-              h("td", {}, r.city),
-              h("td", { dir: "ltr" }, toPersianDigits(r.eshterak)),
-              h("td", {}, r.modeTitle),
-              h("td", {}, formatMoney(r.amount)),
-              h("td", {}, st),
-              h("td", { class: "d-links" }, (r.photoLinks || []).map((u, k) => {
+              td("#", {}, toPersianDigits(i + 1)),
+              td("تاریخ", {}, toPersianDigits(r.date)),
+              td("اکیپ", {}, r.userName || r.userCode),
+              td("امور", {}, r.omoor),
+              td("شهر/بخش", {}, r.city),
+              td("اشتراک", { dir: "ltr" }, toPersianDigits(r.eshterak)),
+              td("عملیات", {}, r.modeTitle),
+              td("مبلغ (ریال)", {}, formatMoney(r.amount)),
+              td("وضعیت", {}, st),
+              td("عکس‌ها", { class: "d-links" }, (r.photoLinks || []).map((u, k) => {
                 const url = safeUrl(u);
                 return url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, `عکس ${toPersianDigits(k + 1)}`) : null;
               })));
@@ -1149,7 +1170,7 @@ export function createAdminModule({ getUser }) {
         ctx.font = `700 42px ${FONT}`;
         ctx.fillText("گزارش ریز سرور — اکیپ‌های وصول مطالبات", PW - M, 68);
         ctx.font = `400 25px ${FONT}`; ctx.fillStyle = "#333";
-        const flt = [filters.omoor && `امور: ${filters.omoor}`, filters.userCode && `اکیپ: ${filters.userCode}`, filters.modeTitle && `عملیات: ${filters.modeTitle}`, filters.eshterak && `اشتراک: ${filters.eshterak}`].filter(Boolean).join("  |  ");
+        const flt = [filters.region && `منطقه: ${filters.region}`, filters.omoor && `امور: ${filters.omoor}`, filters.userCode && `اکیپ: ${filters.userCode}`, filters.modeTitle && `عملیات: ${filters.modeTitle}`, filters.eshterak && `اشتراک: ${filters.eshterak}`].filter(Boolean).join("  |  ");
         ctx.fillText(toPersianDigits(`بازه: ${filters.fromDate} تا ${filters.toDate}   |   ${recs.length} رکورد   |   تاریخ تولید: ${new Date().toLocaleDateString("fa-IR")}`), PW - M, 120);
         ctx.fillText(toPersianDigits(flt || "بدون فیلتر دیگر"), PW - M, 158);
         y = TOP_FIRST;
@@ -1235,59 +1256,128 @@ export function createAdminModule({ getUser }) {
       f.key = h("input", { type: "password", name: "admin-key", dir: "ltr", class: "ltr-in", autocomplete: "new-password", placeholder: "همان رمز ورود ادمین" });
       f.from = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/01" }));
       f.to = attachDatePicker(h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "1405/07/30" }));
-      f.all = h("input", { type: "checkbox", onchange: () => { f.from.disabled = f.to.disabled = f.all.checked; } });
+      f.all = h("input", { type: "checkbox", onchange: () => { f.from.disabled = f.to.disabled = f.all.checked; syncRangeUi(); syncMoreBadge(); } });
       f.user = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "مثال: 05 (خالی = همه)" });
       f.mode = h("select", {}, h("option", { value: "" }, "همه عملیات‌ها"), Object.values(MODES).map((m) => h("option", { value: m.title }, m.title)));
-      f.omoor = h("select", {}, h("option", { value: "" }, "همه امورها"), OMOORS.map((o) => h("option", { value: o }, o)));
+      f.omoor = h("select", {});
       f.eshterak = h("input", { type: "text", inputmode: "numeric", dir: "ltr", class: "ltr-in", placeholder: "خالی = همه" });
       f.group = h("select", { onchange: reRenderGroup }, GROUPS.map((g) => h("option", { value: g.value }, g.label)));
+      // جای «فیلتر منطقه»: فعلاً فقط نمایشی است (نام منطقه‌ها و نگاشت امورها بعداً داده می‌شود؛ هنوز در درخواست‌ها فرستاده نمی‌شود)
+      // منطقه: ادمین اصلی بین ۴ منطقه فیلتر می‌کند؛ ادمین منطقه برچسب ثابتِ منطقهٔ خودش را می‌بیند (سرور هم همین را اعمال می‌کند)
+      const mine = myRegion();
+      f.region = mine
+        ? h("select", { disabled: true, "aria-label": "منطقه" }, h("option", { value: mine }, `منطقه ${mine}`))
+        : h("select", { "aria-label": "منطقه", onchange: fillOmoors }, h("option", { value: "" }, "همه مناطق"), REGION_NAMES.map((r) => h("option", { value: r }, `منطقه ${r}`)));
+      if (mine) f.region.value = mine;
+      fillOmoors();
       result = h("div", { class: "report-result" });
       links = h("div", { class: "export-links" });
       detailResult = h("div", { class: "report-result" });
       detailInfo = h("div", { class: "export-links" });
 
-      container.append(
-        h("div", { class: "card card-elevated" },
-          h("h3", { class: "card-title" }, "فیلتر گزارش سرور"),
-          field("رمز ادمین (برای تأیید دسترسی در سرور)", f.key),
-          h("div", { class: "field" }, rangeSelect(PRESETS, (k) => {
-            if (k === "all") { f.all.checked = true; f.from.disabled = f.to.disabled = true; return; }
-            f.all.checked = false; f.from.disabled = f.to.disabled = false;
-            const r = rangePreset(k); f.from.value = r.from; f.to.value = r.to;
-          })),
-          h("div", { class: "row2" }, field("از تاریخ", f.from), field("تا تاریخ", f.to)),
-          h("label", { class: "chk-row" }, f.all, "همه بازه (بدون محدودیت تاریخ)"),
+      let tab = "summary";
+
+      /* ── بازهٔ سریع ── */
+      const RANGE_CHIPS = [["today", "امروز"], ["yesterday", "دیروز"], ["last7", "۷ روز"], ["thisMonth", "این ماه"], ["custom", "دلخواه"]];
+      const chipEls = {};
+      function syncRangeUi() {
+        let hit = "custom";
+        if (f.all.checked) hit = "";
+        else for (const [k] of RANGE_CHIPS) {
+          if (k === "custom") continue;
+          const r = rangePreset(k);
+          if (r.from === f.from.value && r.to === f.to.value) { hit = k; break; }
+        }
+        for (const [k, el] of Object.entries(chipEls)) el.classList.toggle("active", k === hit);
+      }
+      function pickRange(k) {
+        f.all.checked = false; f.from.disabled = f.to.disabled = false;
+        if (k === "custom") { f.from.focus?.(); }
+        else { const r = rangePreset(k); f.from.value = r.from; f.to.value = r.to; }
+        syncRangeUi(); syncMoreBadge();
+      }
+      const rangeChips = h("div", { class: "rng-chips" }, RANGE_CHIPS.map(([k, label]) => {
+        chipEls[k] = h("button", { type: "button", class: "rng-chip", "data-k": k, onclick: () => pickRange(k) }, label);
+        return chipEls[k];
+      }));
+      for (const el of [f.from, f.to]) { el.addEventListener("input", syncRangeUi); el.addEventListener("change", syncRangeUi); }
+
+      /* ── فیلتر بیشتر (برگهٔ پایین) ── */
+      const moreBtn = h("button", { type: "button", class: "btn btn-secondary more-btn", onclick: () => sheet.classList.remove("hidden") }, "فیلتر بیشتر ", h("b", { class: "more-n hidden" }, ""));
+      const moreN = moreBtn.querySelector(".more-n");
+      function syncMoreBadge() {
+        const n = (f.user.value.trim() ? 1 : 0) + (f.eshterak.value.trim() ? 1 : 0) + (f.mode.value ? 1 : 0) + (f.all.checked ? 1 : 0);
+        moreN.textContent = toPersianDigits(n);
+        moreN.classList.toggle("hidden", !n);
+      }
+      for (const el of [f.user, f.eshterak, f.mode]) { el.addEventListener("input", syncMoreBadge); el.addEventListener("change", syncMoreBadge); }
+      const sheet = h("div", { class: "sheet-back hidden", onclick: (e) => { if (e.target === sheet) sheet.classList.add("hidden"); } },
+        h("div", { class: "sheet", role: "dialog", "aria-label": "فیلتر بیشتر" },
+          h("div", { class: "sheet-grab" }),
+          h("h3", { class: "card-title" }, "فیلتر بیشتر"),
           h("div", { class: "row2" }, field("کد اکیپ", f.user), field("شماره اشتراک", f.eshterak)),
           field("نوع عملیات", f.mode),
-          field("امور (برای ZIP عکس‌ها فقط یک امور)", f.omoor),
-          field("گروه‌بندی گزارش (PDF و گزارش نمایشی)", f.group),
-          h("div", { class: "btn-group" },
-            h("button", { type: "button", class: "btn btn-primary", onclick: fetchReport }, h("span", { class: "ico-sm", html: ICONS.list }), "دریافت گزارش"),
-            h("button", { type: "button", class: "btn btn-success", onclick: exportExcel }, h("span", { class: "ico-sm", html: ICONS.sheet }), "خروجی Excel"),
-            h("button", { type: "button", class: "btn btn-danger", onclick: exportPdf }, h("span", { class: "ico-sm", html: ICONS.pdf }), "خروجی PDF"),
-            h("button", { type: "button", class: "btn btn-warning", onclick: photosZip }, h("span", { class: "ico-sm", html: ICONS.zip }), "ZIP عکس‌ها (حداقل یک فیلتر، تاریخ ≤ ۱۰ روز)")
-          ),
+          h("label", { class: "chk-row" }, f.all, "همه بازه (بدون محدودیت تاریخ)"),
+          h("button", { type: "button", class: "btn btn-secondary btn-xs", style: "margin-top:12px", onclick: clearPhotoCache }, "پاک کردن حافظهٔ عکس‌های دانلودشده"),
+          h("button", { type: "button", class: "btn btn-primary", style: "margin-top:12px", onclick: () => sheet.classList.add("hidden") }, "اعمال فیلترها")));
+
+      /* ── رمز ادمین: از نشست گرفته می‌شود؛ فقط اگر نبود پرسیده می‌شود ── */
+      f.keyField = field("رمز ادمین (برای تأیید دسترسی در سرور)", f.key);
+      f.keyField.classList.add("hidden");
+
+      /* ── زبانه‌ها ── */
+      const tabBtns = {};
+      const summaryPane = h("div", { class: "adm-pane" },
+        field("گروه‌بندی جدول", f.group), result);
+      const detailPane = h("div", { class: "adm-pane hidden" },
+        h("p", { class: "info-text" }, `فقط بازهٔ حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز و حداکثر ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد؛ لینک عکس‌ها در نمایش و در PDF فعال است.`),
+        detailInfo, detailResult);
+      const fetchBtn = h("button", { type: "button", class: "btn btn-primary adm-fetch", onclick: () => (tab === "detail" ? showDetail() : fetchReport()) },
+        h("span", { class: "ico-sm", html: ICONS.list }), h("span", { class: "fl" }, "دریافت گزارش"));
+      const pdfBtn = h("button", { type: "button", class: "btn adm-x", onclick: () => (tab === "detail" ? exportDetailPdf() : exportPdf()) },
+        h("span", { class: "ico-sm", html: ICONS.pdf }), h("span", { class: "xl" }, "خروجی PDF"));
+      function setTab(t) {
+        tab = t;
+        for (const [k, el] of Object.entries(tabBtns)) el.classList.toggle("active", k === t);
+        summaryPane.classList.toggle("hidden", t !== "summary");
+        detailPane.classList.toggle("hidden", t !== "detail");
+        fetchBtn.querySelector(".fl").textContent = t === "detail" ? "نمایش گزارش ریز" : "دریافت گزارش";
+        pdfBtn.querySelector(".xl").textContent = t === "detail" ? "PDF گزارش ریز" : "خروجی PDF";
+      }
+      const tabs = h("div", { class: "segs adm-tabs" }, [["summary", "خلاصه"], ["detail", "ریز رکوردها"]].map(([k, label]) => {
+        tabBtns[k] = h("button", { type: "button", class: "seg", "data-t": k, onclick: () => setTab(k) }, label);
+        return tabBtns[k];
+      }));
+
+      container.append(
+        h("div", { class: "card card-elevated adm-card" },
+          h("h3", { class: "card-title" }, "گزارش سرور"),
+          f.keyField,
+          rangeChips,
+          h("div", { class: "row2 adm-dates" }, field("از تاریخ", f.from), field("تا تاریخ", f.to)),
+          h("div", { class: "row2 adm-sel" }, h("div", { class: "field region-field" }, h("label", {}, "منطقه"), f.region), field("امور", f.omoor)),
+          h("div", { class: "adm-actions" }, moreBtn, fetchBtn),
           links,
-          h("div", { style: "margin-top:8px" }, h("button", { type: "button", class: "btn btn-secondary btn-xs", onclick: clearPhotoCache }, "پاک کردن حافظهٔ عکس‌های دانلودشده"))
+          tabs,
+          summaryPane,
+          detailPane
         ),
-        h("div", { class: "card card-elevated" }, result),
-        h("div", { class: "card card-elevated" },
-          h("h3", { class: "card-title" }, "گزارش ریز (با لینک عکس‌ها)"),
-          h("p", { class: "info-text" }, `با همان فیلترهای بالا؛ فقط بازهٔ حداکثر ${toPersianDigits(DETAIL_MAX_DAYS)} روز و حداکثر ${toPersianDigits(DETAIL_MAX_ROWS)} رکورد (بیشتر از آن نمایش داده نمی‌شود). لینک عکس‌ها هم در نمایش و هم در PDF فعال است.`),
-          h("div", { class: "btn-group" },
-            h("button", { type: "button", class: "btn btn-primary", onclick: showDetail }, h("span", { class: "ico-sm", html: ICONS.list }), "نمایش گزارش ریز"),
-            h("button", { type: "button", class: "btn btn-danger", onclick: exportDetailPdf }, h("span", { class: "ico-sm", html: ICONS.pdf }), "PDF گزارش ریز")
-          ),
-          detailInfo,
-          detailResult
-        )
+        h("div", { class: "adm-foot" },
+          h("button", { type: "button", class: "btn adm-x", onclick: exportExcel }, h("span", { class: "ico-sm", html: ICONS.sheet }), "خروجی Excel"),
+          pdfBtn,
+          h("button", { type: "button", class: "btn adm-x", onclick: photosZip, title: "حداقل یک فیلتر، تاریخ ≤ ۱۰ روز" }, h("span", { class: "ico-sm", html: ICONS.zip }), "ZIP عکس‌ها")),
+        sheet
       );
+      setTab("summary");
+      syncRangeUi();
     },
     onShow() {
       const t = todayJalali();
       if (!f.from.value) f.from.value = t;
       if (!f.to.value) f.to.value = t;
       if (!f.key.value) f.key.value = sessionPass();
+      f.keyField.classList.toggle("hidden", !!f.key.value); // رمز از نشست آمده → فیلد پنهان؛ نبود → پرسیده می‌شود
+      f.from.dispatchEvent(new Event("change"));
     },
   };
 }

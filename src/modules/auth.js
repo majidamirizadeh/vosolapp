@@ -10,6 +10,8 @@
  *   "role": "test"   → حساب تست: همه‌چیز را می‌بیند ولی چیزی به سرور ارسال نمی‌شود
  *   "canSend": false → همان رفتار حساب تست
  *   "role": "admin"  → ادمین: تب «گزارش سرور» را هم می‌بیند
+ *   "region": "غرب"  → (فقط برای ادمین) ادمین منطقه: گزارش سرور فقط امورهای همان منطقه (config/regions.js)؛
+ *                      بدون region = ادمین اصلی (همهٔ امورها). محدودیت در سرور هم اعمال می‌شود (SETTINGS.REGION_ADMINS).
  * کاربر بدون این فیلدها رفتار عادی دارد (canSend = true).
  */
 import { kv } from "../core/db.js";
@@ -38,12 +40,15 @@ export const userCount = () => users.length;
 function perms(u) {
   const role = u?.role ? String(u.role).toLowerCase() : "";
   const canSend = !(role === "test" || u?.canSend === false);
-  return { role, canSend };
+  const region = role === "admin" && u?.region ? String(u.region).trim() : "";
+  return { role, canSend, region };
 }
 
 export const isTestUser = (u) => !!u && !perms(u).canSend;
 export const canSend = (u) => !u || perms(u).canSend;
 export const isAdmin = (u) => !!u && perms(u).role === "admin";
+/** منطقهٔ ادمین منطقه؛ "" = ادمین اصلی (یا کاربر غیرادمین) */
+export const adminRegion = (u) => (u && perms(u).role === "admin" ? perms(u).region : "");
 /** رمز ورودِ ادمین در همین نشست (اگر برنامه دوباره باز شده باشد خالی است) */
 export const sessionPass = () => loginPass;
 
@@ -58,8 +63,8 @@ export async function login(codeInput, password) {
   if (u.passHash) ok = (await sha256Hex(`${normCode(u.code)}:${pass}`)) === u.passHash;
   else if (u.pass != null) ok = toLatinDigits(String(u.pass)) === pass;
   if (!ok) return null;
-  const { role, canSend } = perms(u);
-  const session = { code: u.code, name: u.name || u.code, role, canSend, at: Date.now() };
+  const { role, canSend, region } = perms(u);
+  const session = { code: u.code, name: u.name || u.code, role, canSend, region, at: Date.now() };
   loginPass = pass;
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;
