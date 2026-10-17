@@ -124,6 +124,18 @@ export function createFormModule({ getUser, onEditDone }) {
     else if (how === "gallery") galInput.click();
   }
 
+  function photoErrorText(e) {
+    const code = e?.code || "decode";
+    const msg = {
+      empty: "فایل عکس خالی است؛ دوباره عکس بگیرید",
+      unreadable: "فایل عکس در دسترس نیست (شاید هنوز دانلود نشده یا حافظه گوشی پر است)؛ دوباره عکس بگیرید",
+      heic: "فرمت عکس (HEIC/AVIF) پشتیبانی نمی‌شود؛ فرمت دوربین را روی JPEG بگذارید یا با دوربین خود برنامه عکس بگیرید",
+      memory: "حافظهٔ گوشی برای پردازش عکس کم است؛ برنامه‌های دیگر را ببندید و دوباره تلاش کنید",
+      decode: "فایل انتخاب‌شده عکس سالم نیست؛ دوباره عکس بگیرید یا عکس دیگری انتخاب کنید",
+    }[code] || "خواندن عکس ممکن نشد";
+    return `${msg} (${code})`;
+  }
+
   async function onPick(i, input) {
     const file = input.files?.[0];
     if (!file) return;
@@ -135,7 +147,7 @@ export function createFormModule({ getUser, onEditDone }) {
       renderPhotos();
       feedback("photo");
     } catch (e) {
-      toast("خواندن عکس ممکن نشد", "error");
+      toast(photoErrorText(e), "error");
     } finally {
       b.done();
       input.value = "";

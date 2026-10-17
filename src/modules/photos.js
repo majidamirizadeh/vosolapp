@@ -9,20 +9,64 @@ export async function ensureFonts() {
   } catch { /* فونت سیستم جایگزین می‌شود */ }
 }
 
-async function decode(blob) {
-  if (window.createImageBitmap) {
-    try {
-      return await createImageBitmap(blob, { imageOrientation: "from-image" });
-    } catch { /* ادامه با Image */ }
+/** خطای خواندن عکس با کد مشخص (برای پیام دقیق به کاربر) */
+export class PhotoError extends Error {
+  constructor(code, cause) { super(code); this.code = code; this.cause = cause; }
+}
+
+/** تشخیص فرمت واقعی از چند بایت ابتدای فایل */
+async function sniff(file) {
+  const buf = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const asc = (a, b) => String.fromCharCode(...buf.slice(a, b));
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "jpeg";
+  if (buf[0] === 0x89 && asc(1, 4) === "PNG") return "png";
+  if (asc(0, 4) === "RIFF" && asc(8, 12) === "WEBP") return "webp";
+  if (asc(4, 8) === "ftyp") {
+    const brand = asc(8, 12);
+    if (/^(heic|heix|hevc|hevx|heim|heis|mif1|msf1|heif)$/.test(brand)) return "heic";
+    if (brand === "avif" || brand === "avis") return "avif";
   }
-  const url = URL.createObjectURL(blob);
+  return "unknown";
+}
+
+const loadImg = (src) => new Promise((res, rej) => {
+  const img = new Image();
+  img.onload = () => res(img);
+  img.onerror = () => rej(new Error("img onerror"));
+  img.src = src;
+});
+
+const readDataUrl = (file) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(fr.result);
+  fr.onerror = () => rej(fr.error || new Error("FileReader"));
+  fr.readAsDataURL(file);
+});
+
+/** چند روش پشت‌سرهم: createImageBitmap → همان بدون گزینه → Image با آدرس موقت → Image با FileReader */
+async function decode(file) {
+  if (!file || file.size === 0) throw new PhotoError("empty");
+  let kind = "unknown";
   try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    return img;
-  } finally {
+    kind = await sniff(file);
+  } catch (e) {
+    // خود فایل خوانده نمی‌شود (مثلاً هنوز از ابر دانلود نشده، یا دسترسی/حافظه مشکل دارد)
+    throw new PhotoError("unreadable", e);
+  }
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: "from-image" }); } catch { /* بعدی */ }
+    try { return await createImageBitmap(file); } catch { /* بعدی */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    return await loadImg(url);
+  } catch { /* بعدی */ } finally {
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  try {
+    return await loadImg(await readDataUrl(file));
+  } catch (e) {
+    throw new PhotoError(kind === "heic" || kind === "avif" ? "heic" : "decode", e);
   }
 }
 
@@ -33,13 +77,26 @@ const toBlob = (canvas, type, q) =>
 export async function downscale(file, maxSide = CONFIG.photos.maxSide, quality = 0.9) {
   const bmp = await decode(file);
   const w0 = bmp.width, h0 = bmp.height;
-  const k = Math.min(1, maxSide / Math.max(w0, h0));
-  const w = Math.round(w0 * k), h = Math.round(h0 * k);
-  const c = document.createElement("canvas");
-  c.width = w; c.height = h;
-  c.getContext("2d").drawImage(bmp, 0, 0, w, h);
-  bmp.close?.();
-  return { blob: await toBlob(c, "image/jpeg", quality), width: w, height: h };
+  if (!w0 || !h0) { bmp.close?.(); throw new PhotoError("decode"); }
+  let side = maxSide;
+  try {
+    // اگر حافظه گوشی کم باشد، با ابعاد کوچک‌تر دوباره تلاش می‌شود
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const k = Math.min(1, side / Math.max(w0, h0));
+      const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+      try {
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(bmp, 0, 0, w, h);
+        return { blob: await toBlob(c, "image/jpeg", quality), width: w, height: h };
+      } catch (e) {
+        if (attempt === 2) throw new PhotoError("memory", e);
+        side = Math.round(side * 0.7);
+      }
+    }
+  } finally {
+    bmp.close?.();
+  }
 }
 
 /**
